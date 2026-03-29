@@ -1,56 +1,21 @@
-name: GitHub-VPN-Final-v2
-
-on:
-  workflow_dispatch:
-  repository_dispatch:
-    types: [start_proxy]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Tools
+- name: Configure Xray
         run: |
-          # 安装 Xray
-          sudo bash -s -- install < <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)
-          # 安装 cloudflared
-          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
-
-      - name: Force Configure Xray
-        run: |
-          # 1. 彻底停止并禁用可能冲突的默认服务
           sudo systemctl stop xray || true
-          
-          # 2. 写入你的 UUID 和 Path
           cat <<EOF | sudo tee /usr/local/etc/xray/config.json
           {
-              "log": { "loglevel": "info" },
               "inbounds": [{
                   "port": 8080,
                   "protocol": "vless",
                   "settings": {
-                      "clients": [{ "id": "d342d11e-d424-4583-b36e-52490062b323" }],
+                      "clients": [{"id": "d342d11e-d424-4583-b36e-52490062b323"}],
                       "decryption": "none"
                   },
                   "streamSettings": {
                       "network": "ws",
-                      "wsSettings": { "path": "/speedtest" }
+                      "wsSettings": {"path": "/speedtest"}
                   }
               }],
-              "outbounds": [{ "protocol": "freedom" }]
+              "outbounds": [{"protocol": "freedom"}]
           }
           EOF
-          
-          # 3. 以后台进程启动，并直接指定配置文件
           sudo /usr/local/bin/xray run -c /usr/local/etc/xray/config.json &
-
-      - name: Run Cloudflare Tunnel
-        env:
-          TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
-        run: |
-          # 运行隧道并保持前台监控
-          cloudflared tunnel run --token $TUNNEL_TOKEN
