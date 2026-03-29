@@ -3,6 +3,7 @@ name: VPN-Stop-Service
 on:
   repository_dispatch:
     types: [stop_proxy]
+  workflow_dispatch:
 
 jobs:
   shutdown:
@@ -11,5 +12,7 @@ jobs:
       - name: Cancel Previous Runs
         uses: styfle/cancel-workflow-action@0.11.0
         with:
-          all_but_latest: false # 停止仓库内所有正在运行的任务
-          access_token: ${{ secrets.MY_TOKEN }} # 使用你存储的 PAT 确保有最高权限
+          all_but_latest: false
+          access_token: ${{ secrets.MY_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
