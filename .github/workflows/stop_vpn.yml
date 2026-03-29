@@ -8,8 +8,10 @@ jobs:
   terminate:
     runs-on: ubuntu-latest
     steps:
-      - name: Cancel Previous Runs
+      - name: 强制中止所有正在运行的工作流
         uses: styfle/cancel-workflow-action@0.11.0
         with:
-          all_but_latest: false
+          # 关键参数：true 表示取消除了“我自己”以外的所有任务
+          all_but_latest: true 
+          # 使用 GitHub 自动生成的 Token 即可，无需额外设置
           access_token: ${{ github.token }}
