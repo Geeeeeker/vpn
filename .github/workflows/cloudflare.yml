@@ -1,4 +1,4 @@
-name: High-Speed-CF-Proxy
+name: High-Speed-CF-Proxy（高速）
 on:
   workflow_dispatch:
 
