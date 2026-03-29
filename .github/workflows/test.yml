@@ -7,59 +7,43 @@ on:
 
 jobs:
   deploy:
-    [cite_start]runs-on: ubuntu-24.04 # 匹配你日志中的系统版本 [cite: 1, 21]
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Tools
         run: |
-          # 安装 Xray [cite: 2, 8]
           sudo bash -s -- install < <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)
-          # 安装 cloudflared [cite: 2, 19]
           curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
       - name: Configure Xray
         run: |
-          # 停止安装脚本自动启动的默认服务 [cite: 16]
           sudo systemctl stop xray
-          
-          # 写入你的专用配置 (端口 8080, 路径 /speedtest)
+          sudo mkdir -p /usr/local/etc/xray
           cat <<EOF | sudo tee /usr/local/etc/xray/config.json
           {
-              "log": {
-                  "loglevel": "info"
-              },
+              "log": { "loglevel": "info" },
               "inbounds": [{
                   "port": 8080,
                   "protocol": "vless",
                   "settings": {
-                      "clients": [{
-                          "id": "d342d11e-d424-4583-b36e-52490062b323",
-                          "level": 0
-                      }],
+                      "clients": [{ "id": "d342d11e-d424-4583-b36e-52490062b323" }],
                       "decryption": "none"
                   },
                   "streamSettings": {
                       "network": "ws",
-                      "wsSettings": {
-                          "path": "/speedtest"
-                      }
+                      "wsSettings": { "path": "/speedtest" }
                   }
               }],
-              "outbounds": [{
-                  "protocol": "freedom"
-              }]
+              "outbounds": [{ "protocol": "freedom" }]
           }
           EOF
-          
-          # 重启服务以加载新配置 [cite: 12, 16]
           sudo systemctl restart xray
 
       - name: Run Cloudflare Tunnel
         env:
           TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
-          # 运行隧道并保持进程在前台，防止工作流结束 [cite: 12]
           cloudflared tunnel run --token $TUNNEL_TOKEN
