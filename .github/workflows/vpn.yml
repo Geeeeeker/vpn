@@ -1,4 +1,4 @@
-name: Reality-ngrok-Proxy
+name: Reality-ngrok-Proxy（安全低速）
 on:
   workflow_dispatch:
 
