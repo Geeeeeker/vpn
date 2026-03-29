@@ -1,0 +1,61 @@
+name: High-Speed-CF-Proxy
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Xray & Cloudflared
+        run: |
+          # 安装 Xray
+          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+          # 安装 Cloudflared
+          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Generate WS Config
+        id: vars
+        run: |
+          UUID=$(xray uuid)
+          echo "uuid=$UUID" >> $GITHUB_OUTPUT
+          
+          cat <<EOF > config.json
+          {
+            "inbounds": [{
+              "port": 8080,
+              "protocol": "vless",
+              "settings": {"clients": [{"id": "$UUID"}], "decryption": "none"},
+              "streamSettings": {
+                "network": "ws",
+                "wsSettings": {"path": "/speedtest"}
+              }
+            }],
+            "outbounds": [{"protocol": "freedom"}]
+          }
+          EOF
+
+      - name: Start Services
+        run: |
+          # 启动 Xray
+          sudo xray run -c config.json &
+          # 启动 Cloudflare 隧道 (自动获取最快节点)
+          cloudflared tunnel --url http://localhost:8080 > cf.log 2>&1 &
+          sleep 15
+
+      - name: Output Link
+        run: |
+          CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///')
+          UUID="${{ steps.vars.outputs.uuid }}"
+          
+          # 拼接标准的 VLESS-WS-TLS 链接
+          LINK="vless://$UUID@$CF_URL:443?encryption=none&security=tls&type=ws&host=$CF_URL&path=%2Fspeedtest#CF-HighSpeed"
+          
+          echo "=================================================="
+          echo "🚀 极速节点部署成功！"
+          echo "--------------------------------------------------"
+          echo "一键导入链接:"
+          echo "$LINK"
+          echo "=================================================="
+          
+          sleep 21600
