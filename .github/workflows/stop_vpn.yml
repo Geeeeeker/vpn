@@ -1,0 +1,15 @@
+name: VPN-Remote-Shutdown
+
+on:
+  repository_dispatch:
+    types: [stop_proxy]
+
+jobs:
+  terminate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.11.0
+        with:
+          all_but_latest: false
+          access_token: ${{ github.token }}
