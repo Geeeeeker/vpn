@@ -8,18 +8,21 @@ jobs:
     steps:
       - name: Install Xray & Cloudflared
         run: |
-          # 安装 Xray
-          bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-          # 安装 Cloudflared
+          # 1. 使用 sudo 安装 Xray (核心修正)
+          curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | sudo bash -s -- install
+          
+          # 2. 安装 Cloudflared
           curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
       - name: Generate WS Config
         id: vars
         run: |
+          # 生成 UUID
           UUID=$(xray uuid)
           echo "uuid=$UUID" >> $GITHUB_OUTPUT
           
+          # 构造 VLESS-WS 配置
           cat <<EOF > config.json
           {
             "inbounds": [{
@@ -37,25 +40,37 @@ jobs:
 
       - name: Start Services
         run: |
-          # 启动 Xray
-          sudo xray run -c config.json &
-          # 启动 Cloudflare 隧道 (自动获取最快节点)
+          # 1. 启动 Xray (必须用 sudo)
+          sudo xray run -c $(pwd)/config.json > xray.log 2>&1 &
+          
+          # 2. 启动 Cloudflare 隧道
           cloudflared tunnel --url http://localhost:8080 > cf.log 2>&1 &
-          sleep 15
+          
+          # 等待隧道建立域名
+          sleep 20
 
       - name: Output Link
         run: |
+          # 从日志中提取随机生成的 .trycloudflare.com 域名
           CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///')
+          
+          if [ -z "$CF_URL" ]; then
+            echo "❌ 隧道启动失败，请检查 cf.log:"
+            cat cf.log
+            exit 1
+          fi
+          
           UUID="${{ steps.vars.outputs.uuid }}"
           
-          # 拼接标准的 VLESS-WS-TLS 链接
+          # 拼接 VLESS-WS-TLS 链接
           LINK="vless://$UUID@$CF_URL:443?encryption=none&security=tls&type=ws&host=$CF_URL&path=%2Fspeedtest#CF-HighSpeed"
           
           echo "=================================================="
-          echo "🚀 极速节点部署成功！"
+          echo "🚀 极速节点已部署！"
           echo "--------------------------------------------------"
-          echo "一键导入链接:"
+          echo "手机一键导入链接:"
           echo "$LINK"
           echo "=================================================="
           
+          # 保持运行 6 小时
           sleep 21600
