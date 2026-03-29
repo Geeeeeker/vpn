@@ -1,27 +1,31 @@
-name: Fixed-Domain-Proxy
+name: GitHub-VPN-Ultimate
 
 on:
-  workflow_dispatch:
-  repository_dispatch:
+  workflow_dispatch: # 手动点击运行
+  repository_dispatch: # 远程 API 触发
     types: [start_proxy]
 
 jobs:
   deploy:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Tools
+      - name: Install Xray and Cloudflared
         run: |
+          # 安装 Xray
           sudo bash -s -- install < <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)
+          # 安装 Cloudflared
           curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: Configure Xray
+      - name: Configure and Start Xray
         run: |
+          # 1. 停止安装脚本自动启动的默认服务（关键：防止端口占用）
           sudo systemctl stop xray
-          sudo mkdir -p /usr/local/etc/xray
+          
+          # 2. 写入你的专用配置
           cat <<EOF | sudo tee /usr/local/etc/xray/config.json
           {
               "log": { "loglevel": "info" },
@@ -40,10 +44,13 @@ jobs:
               "outbounds": [{ "protocol": "freedom" }]
           }
           EOF
-          sudo systemctl restart xray
+          
+          # 3. 以后台方式启动 Xray
+          sudo /usr/local/bin/xray run -c /usr/local/etc/xray/config.json &
 
       - name: Run Cloudflare Tunnel
         env:
           TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
+          # 运行隧道
           cloudflared tunnel run --token $TUNNEL_TOKEN
