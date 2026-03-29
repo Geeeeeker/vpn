@@ -9,7 +9,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Tools
+      - name: Install Xray & Cloudflared
         run: |
           curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | sudo bash -s -- install
           curl -L -o cf.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
@@ -34,8 +34,9 @@ jobs:
       - name: Start Services
         run: |
           sudo /usr/local/bin/xray run -c $(pwd)/config.json > xray.log 2>&1 &
+          # 启动隧道并等待生成域名
           cloudflared tunnel --url http://localhost:8080 > cf.log 2>&1 &
-          sleep 30
+          sleep 40
 
       - name: Send Email
         uses: dawidd6/action-send-mail@v3
@@ -50,8 +51,8 @@ jobs:
           body: |
             节点已启动！有效期 6 小时。
             
-            VLESS 链接 (直接复制):
-            vless://${{ steps.vars.outputs.uuid }}@$(cat cf.log | grep -oE '[-a-zA-Z0-9]+\.trycloudflare\.com' | head -n 1 | tr -d '\n'):443?encryption=none&security=tls&type=ws&host=$(cat cf.log | grep -oE '[-a-zA-Z0-9]+\.trycloudflare\.com' | head -n 1 | tr -d '\n')&path=%2Fspeedtest#GitHub-VPN
+            VLESS 链接 (手机长按全选复制):
+            vless://${{ steps.vars.outputs.uuid }}@$(grep -oE 'https://[a-z0-9.-]+\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///' | tr -d '[:space:]'):443?encryption=none&security=tls&type=ws&host=$(grep -oE 'https://[a-z0-9.-]+\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///' | tr -d '[:space:]')&path=%2Fspeedtest#GitHub-VPN
 
       - name: Keep Alive
         run: sleep 21600
