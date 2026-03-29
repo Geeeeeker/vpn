@@ -1,0 +1,75 @@
+name: Reality-ngrok-Proxy
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Xray & ngrok
+        run: |
+          curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | sudo bash -s -- install
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update && sudo apt install ngrok
+
+      - name: Generate Reality Config
+        id: vars
+        run: |
+          python3 <<EOF
+          import subprocess, json, os, uuid
+          # 生成密钥
+          res = subprocess.check_output(["xray", "x25519"]).decode("utf-8").split('\n')
+          priv = res[0].split(': ')[1].strip()
+          pub = res[1].split(': ')[1].strip()
+          u_id = str(uuid.uuid4())
+          s_id = os.urandom(4).hex()
+          
+          config = {
+            "inbounds": [{
+              "port": 443, "protocol": "vless",
+              "settings": {"clients": [{"id": u_id, "flow": "xtls-rprx-vision"}], "decryption": "none"},
+              "streamSettings": {
+                "network": "tcp", "security": "reality",
+                "realitySettings": {
+                  "show": False, "dest": "www.microsoft.com:443", "xver": 0,
+                  "serverNames": ["www.microsoft.com"], "privateKey": priv, "shortIds": [s_id]
+                }
+              }
+            }],
+            "outbounds": [{"protocol": "freedom"}]
+          }
+          with open("config.json", "w") as f: json.dump(config, f)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"uuid={u_id}\npub={pub}\nsid={s_id}\n")
+          EOF
+
+      - name: Start Services
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          sudo fuser -k 443/tcp || true
+          sudo xray run -c "$(pwd)/config.json" > xray.log 2>&1 &
+          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+          # 显式指定使用 TLS 转发，提高稳定性
+          ngrok tcp 443 --log=stdout > ngrok.log &
+          sleep 20
+
+      - name: Final Output
+        env:
+          MY_UUID: ${{ steps.vars.outputs.uuid }}
+          MY_PUB: ${{ steps.vars.outputs.pub }}
+          MY_SID: ${{ steps.vars.outputs.sid }}
+        run: |
+          TCP_ADDR=$(grep -o 'tcp://[-a-zA-Z0-9.]*:[0-9]*' ngrok.log | sed 's/tcp:\/\///')
+          ADDR=$(echo $TCP_ADDR | cut -d':' -f1)
+          PORT=$(echo $TCP_ADDR | cut -d':' -f2)
+          LINK="vless://${MY_UUID}@${ADDR}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=${MY_PUB}&sid=${MY_SID}#Reality-NGROK"
+          echo "=================================================="
+          echo "✅ 部署成功！"
+          echo "链接: $LINK"
+          echo "=================================================="
+          sleep 21600
