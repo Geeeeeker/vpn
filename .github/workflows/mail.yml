@@ -1,0 +1,60 @@
+name: VPN-QQ-Mail-Trigger
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [start_proxy]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Tools
+        run: |
+          curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | sudo bash -s -- install
+          curl -L -o cf.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cf.deb
+
+      - name: Generate Config
+        id: vars
+        run: |
+          UUID=$(xray uuid)
+          echo "uuid=$UUID" >> $GITHUB_OUTPUT
+          cat <<EOF > config.json
+          {
+            "inbounds": [{
+              "port": 8080, "protocol": "vless",
+              "settings": {"clients": [{"id": "$UUID"}], "decryption": "none"},
+              "streamSettings": {"network": "ws", "wsSettings": {"path": "/speedtest"}}
+            }],
+            "outbounds": [{"protocol": "freedom"}]
+          }
+          EOF
+
+      - name: Start Services
+        run: |
+          sudo /usr/local/bin/xray run -c $(pwd)/config.json > xray.log 2>&1 &
+          # 使用 trycloudflare 生成临时随机域名
+          cloudflared tunnel --url http://localhost:8080 > cf.log 2>&1 &
+          sleep 35
+
+      - name: Send Email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: 🚀 GitHub VPN 节点已就绪 (QQ)
+          to: 554088258@qq.com
+          from: GitHub Action
+          body: |
+            你好！你的高速节点已成功部署：
+            
+            VLESS 链接 (直接复制到 v2rayNG):
+            vless://${{ steps.vars.outputs.uuid }}@$(grep -o '[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1):443?encryption=none&security=tls&type=ws&host=$(grep -o '[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)&path=%2Fspeedtest#GitHub-Auto-QQ
+            
+            提示：有效期 6 小时。如果连接失败，请重新触发网页。
+
+      - name: Keep Alive
+        run: sleep 21600 # 保持运行 6 小时
