@@ -34,25 +34,39 @@ jobs:
       - name: Start Services
         run: |
           sudo /usr/local/bin/xray run -c $(pwd)/config.json > xray.log 2>&1 &
-          # 启动隧道并等待生成域名
+          # 关键点：使用 2>&1 确保 tunnel 的输出被捕获到文件
           cloudflared tunnel --url http://localhost:8080 > cf.log 2>&1 &
           sleep 40
 
-      - name: Send Email
+      - name: Prepare Node Info
+        id: info
+        run: |
+          # 提取域名并清洗格式
+          DOMAIN=$(grep -oE 'https://[a-z0-9.-]+\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///' | tr -d '[:space:]')
+          UUID="${{ steps.vars.outputs.uuid }}"
+          
+          # 构造标准 VLESS 链接
+          LINK="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=%2Fspeedtest#GitHub-VPN"
+          
+          # 将链接写入文件用于发送附件
+          echo "$LINK" > vpn_node.txt
+          echo "Node info prepared in vpn_node.txt"
+
+      - name: Send Email with Attachment
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.qq.com
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: 🚀 你的 GitHub VPN 节点已就绪
+          subject: 🚀 你的 GitHub VPN 节点已就绪 (包含附件)
           to: 554088258@qq.com
           from: GitHub Action
           body: |
-            节点已启动！有效期 6 小时。
-            
-            VLESS 链接 (手机长按全选复制):
-            vless://${{ steps.vars.outputs.uuid }}@$(grep -oE 'https://[a-z0-9.-]+\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///' | tr -d '[:space:]'):443?encryption=none&security=tls&type=ws&host=$(grep -oE 'https://[a-z0-9.-]+\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///' | tr -d '[:space:]')&path=%2Fspeedtest#GitHub-VPN
+            节点已成功启动！有效期 6 小时。
+            链接已作为附件 vpn_node.txt 发送，请下载后复制使用。
+          # 添加附件配置
+          attachments: vpn_node.txt
 
       - name: Keep Alive
         run: sleep 21600
