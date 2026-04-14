@@ -1,4 +1,4 @@
-name: Redroid 云手机部署 (修复版)
+name: Redroid 云手机部署 (最终修复版)
 
 on:
   workflow_dispatch:
@@ -52,7 +52,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y adb
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || echo "Binder 模块加载跳过"
+          sudo modprobe binder_linux || echo "Binder OK"
           
       - name: 启动 Redroid 容器
         run: |
@@ -64,9 +64,9 @@ jobs:
 
           docker run -d --privileged \
             --name redroid_container \
+            --network host \
             --pull always \
             -v ~/data:/data \
-            -p 5555:5555 \
             $IMAGE \
             androidboot.redroid_width=${{ github.event.inputs.screen_width }} \
             androidboot.redroid_height=${{ github.event.inputs.screen_height }} \
@@ -76,16 +76,17 @@ jobs:
 
       - name: 部署 Web 控制端 (Scrcpy-Web)
         run: |
-          # 使用新的替代镜像 empanda/scrcpy-web
+          # 换用目前最稳定的公共镜像 v99/scrcpy-web
           docker run -d \
             --name scrcpy-web \
-            --link redroid_container:phone \
-            -p 8000:8000 \
-            empanda/scrcpy-web:latest
+            --network host \
+            --pull always \
+            -e ADB_SERVER_IP=127.0.0.1 \
+            v99/scrcpy-web:latest
           
-          # 等待服务启动并手动连接 adb
+          # 确保 adb 连接成功
           sleep 10
-          docker exec scrcpy-web adb connect phone:5555
+          adb connect 127.0.0.1:5555
 
       - name: Cloudflare 穿透
         id: cf_tunnel
@@ -93,6 +94,8 @@ jobs:
           curl -L -o cloudflared.deb https://github.com
           sudo dpkg -i cloudflared.deb
           
+          # Scrcpy-web 默认监听端口通常为 8000 或 48000，这里我们穿透其 Web 服务
+          # 注意：v99/scrcpy-web 默认端口是 8000
           nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
           echo "等待隧道分配域名..."
@@ -104,13 +107,10 @@ jobs:
       - name: 验证并输出结果
         run: |
           echo "=========================================="
-          echo "✅ 部署成功！"
+          echo "✅ 部署完成！"
           echo "🔗 访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
           echo "=========================================="
-          echo "💡 使用提示:"
-          echo "1. 打开链接后，你会看到设备列表。"
-          echo "2. 点击设备旁边的蓝色按钮进入远程控制界面。"
-          echo "3. 如果连接断开，请刷新页面。"
+          echo "💡 如果页面没有显示设备，请稍等 30 秒后刷新。"
           echo "=========================================="
 
       - name: 保持运行 (6小时)
