@@ -1,4 +1,4 @@
-name: Redroid 云手机 (内核补丁版)
+name: Redroid 云手机 (全环境兼容版)
 
 on:
   workflow_dispatch:
@@ -35,26 +35,33 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 强制启用 BinderFS (内核补丁)
+      - name: 1. 内核加固与下载工具准备
         run: |
           sudo apt-get update
           sudo apt-get install -y adb curl wget
           
-          # 创建并挂载 binderfs (Redroid 核心)
+          # 创建并强制挂载 binderfs
           sudo mkdir -p /dev/binderfs
-          sudo mount -t binder binder /dev/binderfs || echo "BinderFS mount failed"
-          # 建立软链接兼容 Redroid
-          sudo ln -s /dev/binderfs/binder /dev/binder || true
-          sudo ln -s /dev/binderfs/hwbinder /dev/hwbinder || true
-          sudo ln -s /dev/binderfs/vndbinder /dev/vndbinder || true
+          sudo mount -t binder binder /dev/binderfs || echo "BinderFS 挂载跳过"
+          
+          # 建立软链接，这是 Redroid 识别 Binder 的关键
+          for dev in binder hwbinder vndbinder; do
+            sudo ln -s /dev/binderfs/$dev /dev/$dev || true
+          done
           sudo chmod 777 /dev/binder* || true
 
-      - name: 2. 安装 Cloudflared (二进制模式)
+      - name: 2. 安装 Cloudflared (可靠二进制模式)
         run: |
-          # 放弃 dpkg，直接下载可执行二进制，防止格式错误
-          wget -q https://github.com
-          chmod +x cloudflared-linux-amd64
-          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          # 使用 -O 强制指定输出文件名，确保 chmod 能找到它
+          wget -q https://github.com -O cloudflared
+          
+          if [ ! -f "cloudflared" ]; then
+            echo "❌ 下载失败，尝试备用地址"
+            curl -L https://github.com -o cloudflared
+          fi
+          
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
           cloudflared --version
 
       - name: 3. 启动 Redroid 容器
@@ -65,7 +72,7 @@ jobs:
             ROOT_PARAM="androidboot.redroid_debuggable=1 ro.secure=0 ro.debuggable=1"
           fi
 
-          # 增加内核支持参数
+          # 启动容器：映射 binderfs 目录并开启特权
           docker run -d --privileged \
             --name redroid \
             --network host \
@@ -78,38 +85,41 @@ jobs:
             androidboot.redroid_gpu_mode=guest \
             $ROOT_PARAM
           
-          sleep 15
+          # 等待并尝试 adb 握手
+          sleep 20
           adb connect 127.0.0.1:5555 || true
 
       - name: 4. 运行 Web UI 并启动隧道
         id: tunnel
         run: |
-          # 启动 Web 端
+          # 强制安装并启动 Web 端
           nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
-          sleep 10
+          sleep 15
           
           # 启动隧道
-          nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
+          nohup cloudflared tunnel --url http://127.0.0.1:8000 > cf.log 2>&1 &
           
-          # 循环提取链接
-          for i in {1..30}; do
+          echo "正在提取动态域名..."
+          for i in {1..45}; do
             CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
             if [ ! -z "$CF_URL" ]; then
               echo "url=$CF_URL" >> $GITHUB_OUTPUT
+              echo "成功找到域名: $CF_URL"
               break
             fi
             sleep 2
           done
 
-      - name: 5. 最终状态
+      - name: 5. 验证部署结果
         run: |
           echo "=========================================="
-          echo "✅ 部署尝试完成"
-          echo "🔗 访问地址: ${{ steps.tunnel.outputs.url }}"
-          echo "📊 状态检查:"
-          docker ps --filter name=redroid
-          adb devices
+          echo "✅ 极速部署完成"
+          echo "🔗 云手机地址: ${{ steps.tunnel.outputs.url }}"
+          echo "=========================================="
+          echo "📊 检查列表:"
+          docker ps | grep redroid || echo "⚠️ 容器未在运行"
+          adb devices | grep 5555 || echo "⚠️ ADB 未能识别设备"
           echo "=========================================="
 
-      - name: 保持运行
+      - name: 持续运行
         run: sleep 21600
