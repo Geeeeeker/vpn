@@ -1,4 +1,4 @@
-name: Redroid 云手机部署 (最终修复版)
+name: Redroid 云手机部署 (稳健版)
 
 on:
   workflow_dispatch:
@@ -48,11 +48,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 优化系统内核模块
+      - name: 优化内核与安装 ADB
         run: |
           sudo apt-get update
           sudo apt-get install -y adb
-          sudo modprobe binder_linux || echo "Binder OK"
+          sudo modprobe binder_linux || echo "Binder Loaded"
           
       - name: 启动 Redroid 容器
         run: |
@@ -62,8 +62,9 @@ jobs:
             ROOT_PROPS="androidboot.redroid_debuggable=1"
           fi
 
+          # 启动 Android 容器
           docker run -d --privileged \
-            --name redroid_container \
+            --name redroid \
             --network host \
             --pull always \
             -v ~/data:/data \
@@ -74,19 +75,23 @@ jobs:
             androidboot.redroid_gpu_mode=${{ github.event.inputs.gpu_mode }} \
             $ROOT_PROPS
 
-      - name: 部署 Web 控制端 (Scrcpy-Web)
+      - name: 部署 Web 控制端 (使用存量稳定的镜像)
         run: |
-          # 换用目前最稳定的公共镜像 v99/scrcpy-web
+          # 改用目前存量最稳、由组织维护的镜像
+          # 该镜像专门用于 Web 端远程操作 scrcpy
           docker run -d \
             --name scrcpy-web \
             --network host \
             --pull always \
             -e ADB_SERVER_IP=127.0.0.1 \
-            v99/scrcpy-web:latest
-          
-          # 确保 adb 连接成功
-          sleep 10
-          adb connect 127.0.0.1:5555
+            -p 8000:8000 \
+            -p 48000:48000 \
+            docker.io/yumechan/scrcpy-web:latest || \
+          docker run -d --name scrcpy-web --network host -p 8000:8000 srs-stack/srs-stack:latest
+
+          # 确保宿主机 ADB 与 Android 容器连接
+          sleep 15
+          adb connect 127.0.0.1:5555 || true
 
       - name: Cloudflare 穿透
         id: cf_tunnel
@@ -94,23 +99,23 @@ jobs:
           curl -L -o cloudflared.deb https://github.com
           sudo dpkg -i cloudflared.deb
           
-          # Scrcpy-web 默认监听端口通常为 8000 或 48000，这里我们穿透其 Web 服务
-          # 注意：v99/scrcpy-web 默认端口是 8000
+          # 穿透 8000 端口
           nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
-          echo "等待隧道分配域名..."
-          timeout 30s bash -c 'until grep -o "https://.*\.trycloudflare\.com" cf.log; do sleep 1; done' || true
-          
+          echo "等待生成公网链接..."
+          sleep 20
           CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
           echo "public_url=$CF_URL" >> $GITHUB_OUTPUT
 
-      - name: 验证并输出结果
+      - name: 验证服务
         run: |
           echo "=========================================="
-          echo "✅ 部署完成！"
+          echo "🚀 云手机启动尝试已发出！"
           echo "🔗 访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
           echo "=========================================="
-          echo "💡 如果页面没有显示设备，请稍等 30 秒后刷新。"
+          echo "状态检查:"
+          adb devices
+          docker ps
           echo "=========================================="
 
       - name: 保持运行 (6小时)
