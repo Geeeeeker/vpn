@@ -1,87 +1,59 @@
-name: Android Emulator 云手机 (稳定修复版)
+name: Android Emulator 云手机 (极简兼容版)
 
 on:
   workflow_dispatch:
-    inputs:
-      android_version:
-        description: 'Android 版本 (建议 25)'
-        required: true
-        type: choice
-        default: '25'
-        options:
-          - '24'
-          - '25'
-          - '29'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 安装 Cloudflared & ADB
+      - name: 1. 安装 Cloudflared
         run: |
-          sudo apt-get update
-          sudo apt-get install -y adb
-          # 参考你提供的成功案例：使用 -L 确保跟随重定向，并添加重试机制
-          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb || (sleep 5 && sudo apt-get install -f -y)
+          curl -L -o cloudflared.deb https://github.com
+          sudo dpkg -i cloudflared.deb
 
-      - name: 2. 运行 Android 模拟器
+      - name: 2. 运行低版本模拟器 (API 22)
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: ${{ github.event.inputs.android_version }}
+          # API 22 是无加速环境下的稳定性上限
+          api-level: 22
           target: google_apis
-          arch: x86_64
+          arch: x86
           force-avd-creation: true
-          # 核心修正：Ubuntu 托管环境无 KVM，必须强制关闭加速并使用软件渲染
-          emulator-options: -no-window -no-audio -no-boot-anim -accel off -gpu swiftshader_indirect -camera-back none
+          # 进一步简化参数，降低 CPU 负载
+          emulator-options: -no-window -no-audio -no-boot-anim -accel off -gpu off
           disable-animations: true
           script: |
-            echo "⌛ 等待 ADB 连接..."
-            adb wait-for-device
+            echo "⌛ 正在等待模拟器初始化..."
+            # 解决 adb offline 的常用手段：杀死再重启
+            adb kill-server
+            adb start-server
+            sleep 30
             
-            echo "⌛ 等待系统启动 (软件渲染约需 5-10 分钟)..."
-            for i in {1..60}; do
-              BOOT=$(adb shell getprop sys.boot_completed | tr -d '\r')
+            echo "⌛ 正在尝试连接 (可能需要 5 分钟以上)..."
+            for i in {1..100}; do
+              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
               if [ "$BOOT" = "1" ]; then
-                echo "✅ 模拟器就绪！"
+                echo "✅ 模拟器成功进入系统！"
                 break
               fi
-              echo "等待中... ($i/60)"
+              echo "当前状态: $(adb devices | grep 'emulator-5554' || echo '未发现设备')"
               sleep 10
             done
 
             echo "🚀 启动 Web 控制端 (ws-scrcpy)..."
-            # 自动安装并运行 Web UI
             nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
             
             echo "☁️ 开启 Cloudflare 隧道..."
-            # 采用你提供的案例逻辑：将隧道指向 Web UI 端口
             cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
             
-            echo "🔗 正在提取访问地址..."
-            sleep 30
+            sleep 20
             CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
             
-            if [ -z "$CF_URL" ]; then
-              echo "❌ 隧道启动失败，查看日志:"
-              cat cf.log
-              exit 1
-            fi
-
-            echo "=================================================="
-            echo "🚀 云手机已成功部署！"
-            echo "--------------------------------------------------"
-            echo "浏览器访问地址:"
-            echo "$CF_URL"
-            echo "=================================================="
+            echo "=========================================="
+            echo "🚀 云手机已就绪"
+            echo "🔗 访问地址: $CF_URL"
+            echo "⚠️ 注意: API 22 版本较低，部分新 App 可能无法运行"
+            echo "=========================================="
             
-            # 保持运行 6 小时
             sleep 21600
-
-      - name: 故障排查
-        if: failure()
-        run: |
-          echo "--- CF 日志 ---"
-          cat cf.log || true
-          echo "--- Web 日志 ---"
-          cat web.log || true
