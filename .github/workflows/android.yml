@@ -1,62 +1,103 @@
-name: Android Emulator 云手机 (Fixed)
+name: Android Emulator 云手机 (Final Edition)
 
 on:
   workflow_dispatch:
     inputs:
       android_version:
-        description: 'Android API 版本'
+        description: 'Android API 版本 (建议 30 或 31)'
         required: true
         type: choice
         default: '31'
         options:
-          - '29'
-          - '30'
-          - '31'
-          - '33'
+          - '29' # Android 10
+          - '30' # Android 11
+          - '31' # Android 12
+          - '33' # Android 13
+      keep_alive:
+        description: '保持运行时间 (单位: 分钟)'
+        default: '360'
 
 jobs:
-  deploy:
+  run-emulator:
+    # 必须用 macos-latest 以支持硬件加速和 ARM 架构
     runs-on: macos-latest
+    
     steps:
-      - name: 1. 安装基础工具
+      - name: 1. 准备运行环境
         run: |
+          echo "安装依赖工具..."
           brew install --cask android-platform-tools
           brew install cloudflared
-          
-          - name: 2. 运行 Android 模拟器
+          # 提前启动 adb server 防止后续冲突
+          adb start-server
+
+      - name: 2. 启动模拟器并执行服务
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ github.event.inputs.android_version }}
           target: google_apis
           arch: arm64-v8a
           force-avd-creation: true
-          # 关键修改：在 ARM macOS 上，不指定 gpu 模式通常最稳定，或使用 host
+          # 关闭窗口/声音以节省性能
           emulator-options: -no-window -no-audio -no-boot-anim -camera-back none
           disable-animations: true
+          
           script: |
-            echo "⌛ 等待模拟器完全启动..."
+            echo "⌛ 正在连接 ADB..."
             adb wait-for-device
             
-            # 确保系统界面已加载
+            echo "⌛ 等待 Android 系统桌面加载..."
+            # 循环检查系统是否启动完成
+            BOOT_TIMEOUT=0
             until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do
-              echo "仍在启动中..."
-              sleep 5
+              if [ $BOOT_TIMEOUT -gt 30 ]; then
+                echo "❌ 启动超时"
+                exit 1
+              fi
+              echo "等待中... ($BOOT_TIMEOUT)"
+              sleep 10
+              BOOT_TIMEOUT=$((BOOT_TIMEOUT+1))
             done
-            echo "✅ 模拟器就绪！"
+            echo "✅ 模拟器已启动！"
 
-            echo "🚀 启动 Web UI 与 隧道..."
+            echo "🚀 启动 Web 投屏服务 (ws-scrcpy)..."
+            # 自动连接模拟器并在后台运行
             nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
+            
+            echo "☁️ 开启 Cloudflare 远程隧道..."
             nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
             
-            echo "🔗 提取访问地址..."
-            timeout 60s sh -c 'until grep -o "https://.*\.trycloudflare\.com" cf.log; do sleep 2; done' | head -n 1
+            echo "🔗 正在提取访问地址..."
+            # 等待隧道生成 https 链接
+            sleep 20
+            CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
             
+            if [ -z "$CF_URL" ]; then
+              echo "❌ 隧道创建失败，当前日志内容："
+              cat cf.log
+              exit 1
+            fi
+
             echo "=========================================="
-            echo "📱 云手机运行中，请通过上方链接访问"
+            echo "🚀 云手机部署成功！"
+            echo "🔗 请复制下方链接到浏览器打开："
+            echo ""
+            echo "    $CF_URL"
+            echo ""
+            echo "📱 正在模拟运行版本: Android ${{ github.event.inputs.android_version }}"
             echo "=========================================="
-            
-            # 保持活跃防止 GitHub 认为任务卡死而杀掉进程
-            for i in {1..360}; do
-              echo "Keep-alive: $(date)"
+
+            # 保持活跃防止 GitHub 任务自动结束
+            MINUTES=${{ github.event.inputs.keep_alive }}
+            for i in $(seq 1 $MINUTES); do
+              echo "Keep-alive: 运行中... 第 $i 分钟"
               sleep 60
             done
+
+      - name: 3. 故障排查 (如果执行失败)
+        if: failure()
+        run: |
+          echo "检查 Web 服务日志:"
+          cat web.log || true
+          echo "检查隧道日志:"
+          cat cf.log || true
