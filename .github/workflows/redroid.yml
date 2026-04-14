@@ -50,28 +50,18 @@ jobs:
     steps:
       - name: 优化系统内核模块
         run: |
-          # 仅安装必要的工具，跳过内核完整更新以节省时间
           sudo apt-get update
           sudo apt-get install -y adb
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || echo "Binder 模块加载跳过"
           
-          # 尝试加载 binder 模块 (Redroid 核心需求)
-          # 在新版内核中，如果 modprobe 失败，尝试挂载 binderfs
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || echo "Binder module load failed, skipping..."
-          
-          # 注意：新内核已舍弃 ashmem，Redroid 会自动处理，所以不再尝试 modprobe ashmem
-
       - name: 启动 Redroid 容器
         run: |
           IMAGE="redroid/redroid:${{ github.event.inputs.android_version }}-latest"
-          
-          # Root 逻辑
           ROOT_PROPS=""
           if [ "${{ github.event.inputs.root_mode }}" == "with-magisk" ]; then
             ROOT_PROPS="androidboot.redroid_debuggable=1"
           fi
 
-          # 启动 Redroid
-          # 增加 --pull always 确保镜像最新
           docker run -d --privileged \
             --name redroid_container \
             --pull always \
@@ -84,14 +74,18 @@ jobs:
             androidboot.redroid_gpu_mode=${{ github.event.inputs.gpu_mode }} \
             $ROOT_PROPS
 
-      - name: 部署 Web 控制端 (ws-scrcpy)
+      - name: 部署 Web 控制端 (Scrcpy-Web)
         run: |
+          # 使用新的替代镜像 empanda/scrcpy-web
           docker run -d \
-            --name ws-scrcpy \
+            --name scrcpy-web \
             --link redroid_container:phone \
             -p 8000:8000 \
-            -e ADB_SERVER_SOCKET=tcp:phone:5555 \
-            butomo1989/docker-ws-scrcpy
+            empanda/scrcpy-web:latest
+          
+          # 等待服务启动并手动连接 adb
+          sleep 10
+          docker exec scrcpy-web adb connect phone:5555
 
       - name: Cloudflare 穿透
         id: cf_tunnel
@@ -99,7 +93,6 @@ jobs:
           curl -L -o cloudflared.deb https://github.com
           sudo dpkg -i cloudflared.deb
           
-          # 启动临时隧道
           nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
           echo "等待隧道分配域名..."
@@ -111,15 +104,13 @@ jobs:
       - name: 验证并输出结果
         run: |
           echo "=========================================="
-          echo "✅ 部署尝试完成！"
-          echo "🔗 Web 访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
+          echo "✅ 部署成功！"
+          echo "🔗 访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
           echo "=========================================="
-          echo "提示：如果页面长时间黑屏，请在页面右侧切换解码器（如 H264）"
-          
-          # 尝试 ADB 连接验证容器内 Android 状态
-          adb connect localhost:5555 || true
-          sleep 5
-          adb devices
+          echo "💡 使用提示:"
+          echo "1. 打开链接后，你会看到设备列表。"
+          echo "2. 点击设备旁边的蓝色按钮进入远程控制界面。"
+          echo "3. 如果连接断开，请刷新页面。"
           echo "=========================================="
 
       - name: 保持运行 (6小时)
