@@ -1,4 +1,4 @@
-name: Redroid 云手机 (终极修复版)
+name: Redroid 云手机 (动态域名优化版)
 
 on:
   workflow_dispatch:
@@ -39,13 +39,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境清理与准备
+      - name: 1. 安装 ADB 与 Cloudflared
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb wget
-          # 确保 8000 端口没被占用
-          sudo fuser -k 8000/tcp || true
-          sudo modprobe binder_linux || echo "Binder OK"
+          sudo apt-get install -y adb
+          # 参考案例：使用官方完整链接下载并安装
+          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
 
       - name: 2. 启动 Redroid 容器
         run: |
@@ -69,49 +69,52 @@ jobs:
           sleep 10
           adb connect 127.0.0.1:5555 || true
 
-      - name: 3. 启动 Web 界面 (npx 模式)
+      - name: 3. 启动 Web UI (npx 模式)
         run: |
-          # 显式指定端口 8000 启动
+          # 启动 Web 端并监听 8000 端口
           nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
-          echo "Web UI 启动中..."
           sleep 15
 
-      - name: 4. 下载并运行 Cloudflared (修复版)
-        id: cf_tunnel
+      - name: 4. 启动隧道并提取动态域名
+        id: tunnel
         run: |
-          # 改为直接下载二进制文件，避开 dpkg 报错
-          wget -q https://github.com -O cloudflared
-          chmod +x cloudflared
+          # 参考案例：启动隧道并将日志重定向
+          cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
-          # 启动隧道
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8000 > cf.log 2>&1 &
+          # 等待建立连接
+          sleep 25
           
-          echo "正在抓取公网链接..."
-          # 增加重试逻辑，等待最多 60 秒
-          for i in {1..60}; do
-            CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
-            if [ ! -z "$CF_URL" ]; then
-              echo "url=$CF_URL" >> $GITHUB_OUTPUT
-              echo "找到链接: $CF_URL"
-              break
-            fi
-            sleep 2
-          done
+          # 参考案例：使用正则表达式精准提取域名
+          CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
           
-          if [ -z "$(grep -o 'https://.*\.trycloudflare\.com' cf.log)" ]; then
-             echo "❌ 无法生成隧道链接，查看日志:"
-             cat cf.log
-             exit 1
+          if [ -z "$CF_URL" ]; then
+            echo "❌ 隧道启动失败，完整日志如下:"
+            cat cf.log
+            exit 1
           fi
+          
+          echo "url=$CF_URL" >> $GITHUB_OUTPUT
+          echo "提取到的域名: $CF_URL"
 
-      - name: 5. 部署结果
+      - name: 5. 验证服务状态
         run: |
           echo "=========================================="
-          echo "✅ 云手机部署成功！"
-          echo "🔗 访问地址: ${{ steps.cf_tunnel.outputs.url }}"
+          echo "✅ Redroid云手机部署完成！"
           echo "=========================================="
-          echo "提示: 进入页面后点击 'H264 Converter' 即可查看画面"
-          adb devices
+          echo ""
+          echo "📱 云手机配置信息:"
+          echo "  - Android版本: ${{ github.event.inputs.android_version }}"
+          echo "  - Root模式: ${{ github.event.inputs.root_mode }}"
+          echo "  - 屏幕分辨率: ${{ github.event.inputs.screen_width }}x${{ github.event.inputs.screen_height }}"
+          echo "  - DPI: ${{ github.event.inputs.dpi }}"
+          echo ""
+          echo "🔗 访问方式:"
+          echo "  - Web访问: ${{ steps.tunnel.outputs.url }}"
+          echo ""
+          echo "📊 服务状态:"
+          echo "  - Redroid容器: $(docker ps --filter name=redroid --format '{{.Status}}')"
+          echo "  - ADB设备:"
+          adb devices | grep "5555"
           echo "=========================================="
 
       - name: 6. 持续运行
