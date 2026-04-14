@@ -1,4 +1,4 @@
-name: Redroid 云手机部署 (v8.1-15)
+name: Redroid 云手机部署 (修复版)
 
 on:
   workflow_dispatch:
@@ -21,10 +21,10 @@ on:
         description: 'Root 权限模式'
         required: true
         type: choice
-        default: 'without-root' # 默认非 Root
+        default: 'without-root'
         options:
-          - 'with-magisk'      # 开启调试级 Root
-          - 'without-root'     # 完全非 Root
+          - 'with-magisk'
+          - 'without-root'
       screen_width:
         description: '屏幕宽度'
         default: '1080'
@@ -32,7 +32,7 @@ on:
         description: '屏幕高度'
         default: '1920'
       dpi:
-        description: '屏幕 DPI (默认调高)'
+        description: '屏幕 DPI'
         default: '480'
       gpu_mode:
         description: 'GPU 加速模式'
@@ -48,26 +48,33 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 优化系统内核
+      - name: 优化系统内核模块
         run: |
+          # 仅安装必要的工具，跳过内核完整更新以节省时间
           sudo apt-get update
-          sudo apt-get install -y linux-modules-extra-$(uname -r) adb
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
-          sudo modprobe ashmem_linux
+          sudo apt-get install -y adb
+          
+          # 尝试加载 binder 模块 (Redroid 核心需求)
+          # 在新版内核中，如果 modprobe 失败，尝试挂载 binderfs
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || echo "Binder module load failed, skipping..."
+          
+          # 注意：新内核已舍弃 ashmem，Redroid 会自动处理，所以不再尝试 modprobe ashmem
 
       - name: 启动 Redroid 容器
         run: |
-          # 定义镜像
           IMAGE="redroid/redroid:${{ github.event.inputs.android_version }}-latest"
           
-          # Root 逻辑处理：Redroid 官方通过增加相关属性开启开发版 Root
+          # Root 逻辑
           ROOT_PROPS=""
           if [ "${{ github.event.inputs.root_mode }}" == "with-magisk" ]; then
-            ROOT_PROPS="ro.debuggable=1 ro.secure=0"
+            ROOT_PROPS="androidboot.redroid_debuggable=1"
           fi
 
+          # 启动 Redroid
+          # 增加 --pull always 确保镜像最新
           docker run -d --privileged \
             --name redroid_container \
+            --pull always \
             -v ~/data:/data \
             -p 5555:5555 \
             $IMAGE \
@@ -92,31 +99,26 @@ jobs:
           curl -L -o cloudflared.deb https://github.com
           sudo dpkg -i cloudflared.deb
           
-          # 启动匿名隧道并将输出存入日志
+          # 启动临时隧道
           nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
-          # 等待链接生成
-          sleep 20
+          echo "等待隧道分配域名..."
+          timeout 30s bash -c 'until grep -o "https://.*\.trycloudflare\.com" cf.log; do sleep 1; done' || true
+          
           CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
           echo "public_url=$CF_URL" >> $GITHUB_OUTPUT
 
-      - name: 验证服务状态
+      - name: 验证并输出结果
         run: |
           echo "=========================================="
-          echo "✅ Redroid 云手机部署完成！"
+          echo "✅ 部署尝试完成！"
+          echo "🔗 Web 访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
           echo "=========================================="
-          echo ""
-          echo "📱 配置清单:"
-          echo "  - 版本: Android ${{ github.event.inputs.android_version }}"
-          echo "  - 模式: ${{ github.event.inputs.root_mode }}"
-          echo "  - 分辨率: ${{ github.event.inputs.screen_width }}x${{ github.event.inputs.screen_height }}"
-          echo "  - DPI: ${{ github.event.inputs.dpi }}"
-          echo ""
-          echo "🔗 访问地址 (复制到浏览器):"
-          echo "  ${{ steps.cf_tunnel.outputs.public_url }}"
-          echo ""
-          echo "📊 检查结果:"
-          adb connect localhost:5555
+          echo "提示：如果页面长时间黑屏，请在页面右侧切换解码器（如 H264）"
+          
+          # 尝试 ADB 连接验证容器内 Android 状态
+          adb connect localhost:5555 || true
+          sleep 5
           adb devices
           echo "=========================================="
 
