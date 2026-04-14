@@ -1,22 +1,93 @@
-      - name: 2. 启动模拟器并执行服务
+name: Android Emulator 云手机 (Ubuntu 稳定版)
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_version:
+        description: 'Android 版本 (建议 25, 软件渲染兼容性最好)'
+        required: true
+        type: choice
+        default: '25'
+        options:
+          - '24' # Android 7.0
+          - '25' # Android 7.1
+          - '29' # Android 10.0 (可能极慢)
+      keep_alive:
+        description: '保持运行分钟数'
+        default: '360'
+
+jobs:
+  run-emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 安装基础工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y adb curl
+          # 安装 Cloudflared
+          curl -L -o cloudflared.deb https://github.com
+          sudo dpkg -i cloudflared.deb
+
+      - name: 2. 运行 Android 模拟器
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ github.event.inputs.android_version }}
           target: google_apis
-          arch: arm64-v8a
+          arch: x86_64
           force-avd-creation: true
-          # 核心修正：添加 -accel off 彻底禁用 HVF，并强制使用软件 GPU
-          emulator-options: >-
-            -no-window 
-            -no-audio 
-            -no-boot-anim 
-            -accel off 
-            -gpu swiftshader_indirect
+          # 关键参数：禁用硬件加速 (-accel off)，强制软件渲染 (swiftshader_indirect)
+          emulator-options: -no-window -no-audio -no-boot-anim -accel off -gpu swiftshader_indirect -camera-back none
           disable-animations: true
+          
           script: |
-            echo "⌛ 正在连接 ADB..."
-            # 软件渲染启动极慢，将超时增加到 20 分钟
+            echo "⌛ 等待 ADB 连接..."
             adb wait-for-device
             
-            echo "⌛ 等待 Android 系统桌面加载 (软件渲染较慢，请耐心等待)..."
-            # 逻辑保持不变...
+            echo "⌛ 等待系统完全启动 (软件渲染需要 5-8 分钟)..."
+            # 轮询检查启动状态
+            for i in {1..50}; do
+              BOOT=$(adb shell getprop sys.boot_completed | tr -d '\r')
+              if [ "$BOOT" = "1" ]; then
+                echo "✅ 模拟器就绪！"
+                break
+              fi
+              echo "等待中... ($i/50)"
+              sleep 15
+            done
+
+            echo "🚀 启动 Web 控制端 (ws-scrcpy)..."
+            # Ubuntu 环境需要先安装 node 环境（GitHub 自带）
+            nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
+            
+            echo "☁️ 开启 Cloudflare 隧道..."
+            nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
+            
+            echo "🔗 提取访问地址..."
+            sleep 30
+            CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
+            
+            if [ -z "$CF_URL" ]; then
+              echo "❌ 隧道生成失败，日志如下："
+              cat cf.log
+              exit 1
+            fi
+
+            echo "=========================================="
+            echo "🚀 部署成功！"
+            echo "🔗 访问链接: $CF_URL"
+            echo "📱 系统版本: Android ${{ github.event.inputs.android_version }}"
+            echo "⚠️ 提示: 软件渲染比较卡顿，点击后请等待画面响应"
+            echo "=========================================="
+
+            # 保持活跃
+            MINUTES=${{ github.event.inputs.keep_alive }}
+            for i in $(seq 1 $MINUTES); do
+              echo "Keep-alive: $(date) - 运行中"
+              sleep 60
+            done
+
+      - name: 故障排查日志
+        if: failure()
+        run: |
+          cat web.log || true
+          cat cf.log || true
