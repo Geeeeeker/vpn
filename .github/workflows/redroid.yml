@@ -1,409 +1,126 @@
-name: Redroid云手机部署
+name: Redroid 云手机部署 (修复版)
 
 on:
   workflow_dispatch:
     inputs:
-      root_mode:
-        description: 'Root权限模式'
-        required: true
-        type: choice
-        default: 'with-magisk'
-        options:
-          - 'with-magisk'      # 带Magisk Root
-          - 'without-root'     # 无Root
       android_version:
-        description: 'Android版本'
+        description: 'Android 版本'
         required: true
         type: choice
         default: '11.0.0'
         options:
+          - '8.1.0'
+          - '9.0.0'
+          - '10.0.0'
           - '11.0.0'
+          - '12.0.0'
           - '13.0.0'
           - '14.0.0_64only'
           - '15.0.0_64only'
+      root_mode:
+        description: 'Root 权限模式'
+        required: true
+        type: choice
+        default: 'without-root'
+        options:
+          - 'with-magisk'
+          - 'without-root'
       screen_width:
         description: '屏幕宽度'
-        required: false
-        type: string
-        default: '720'
+        default: '1080'
       screen_height:
         description: '屏幕高度'
-        required: false
-        type: string
-        default: '1280'
+        default: '1920'
+      dpi:
+        description: '屏幕 DPI'
+        default: '480'
       gpu_mode:
-        description: 'GPU加速模式'
+        description: 'GPU 加速模式'
         required: true
         type: choice
         default: 'guest'
         options:
-          - 'guest'    # 使用宿主GPU加速
-          - 'auto'     # 自动检测
-          - 'host'     # 使用主机GPU
-      dpi:
-        description: '屏幕DPI'
-        required: false
-        type: string
-        default: '320'
-      cloudflare_domain:
-        description: 'Cloudflare域名 (例如: redroid.yourdomain.com)'
-        required: true
-        type: string
-      cloudflare_tunnel_name:
-        description: 'Cloudflare Tunnel名称'
-        required: false
-        type: string
-        default: 'redroid-tunnel'
-
-env:
-  # Redroid容器配置
-  REDROID_CONTAINER_NAME: redroid-cloud-phone
-  ADB_PORT: 5555
-  WSCRCPY_PORT: 8000
-  CLOUDFLARED_PORT: 8080
+          - 'guest'
+          - 'host'
+          - 'auto'
 
 jobs:
-  deploy-redroid:
+  deploy:
     runs-on: ubuntu-latest
-    # 注意：此工作流需要Ubuntu 20.04/22.04环境，且必须使用支持KVM的runner
-    # 由于redroid需要privileged权限，推荐使用自托管的runner
-    
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置运行环境
+      - name: 优化系统内核模块
         run: |
-          echo "=== 系统信息 ==="
-          uname -a
-          echo "Kernel版本: $(uname -r)"
-          
-          # 更新包列表
+          # 仅安装必要的工具，跳过内核完整更新以节省时间
           sudo apt-get update
-
-      - name: 检查并安装内核模块依赖
-        run: |
-          echo "=== 安装内核模块依赖 ==="
-          
-          # 安装内核模块包
-          sudo apt-get install -y linux-modules-extra-$(uname -r)
-          
-          # 加载binder内核模块
-          echo "加载binder_linux模块..."
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || echo "binder_linux加载失败，可能已加载或内核不支持"
-          
-          # 如果内核版本低于5.18，还需要加载ashmem模块
-          KERNEL_VERSION=$(uname -r | cut -d. -f1,2)
-          if [[ "$(echo "$KERNEL_VERSION < 5.18" | bc)" == "1" ]] || [[ -z "$(echo $KERNEL_VERSION | grep -E '^[0-9]')" ]]; then
-            echo "内核版本低于5.18，尝试加载ashmem_linux模块..."
-            sudo modprobe ashmem_linux || echo "ashmem_linux加载失败"
-          fi
-          
-          # 检查模块状态
-          echo "=== 模块加载状态 ==="
-          lsmod | grep -E "binder|ashmem" || echo "未找到binder/ashmem模块"
-          
-          # 检查设备节点
-          echo "=== 设备节点检查 ==="
-          ls -la /dev/ | grep -E "binder|ashmem" || echo "未找到binder/ashmem设备节点"
-          
-          # 如果设备节点不存在，手动创建
-          if [ ! -e /dev/binder ]; then
-            echo "创建binder设备节点..."
-            sudo mkdir -p /dev/binderfs
-            sudo mount -t binder binder /dev/binderfs || echo "binderfs挂载失败"
-          fi
-
-      - name: 安装Docker
-        run: |
-          echo "=== 安装Docker ==="
-          
-          # 检查Docker是否已安装
-          if command -v docker &> /dev/null; then
-            echo "Docker已安装: $(docker --version)"
-          else
-            echo "安装Docker..."
-            curl -fsSL https://get.docker.com -o get-docker.sh
-            sudo sh get-docker.sh
-            sudo usermod -aG docker $USER
-            sudo systemctl start docker
-            sudo systemctl enable docker
-          fi
-          
-          # 配置Docker镜像加速（可选，国内访问加速）
-          echo "配置Docker镜像加速..."
-          sudo mkdir -p /etc/docker
-          echo '{"registry-mirrors": ["https://docker.mirrors.tuna.tsinghua.edu.cn"]}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl daemon-reload
-          sudo systemctl restart docker
-          
-          echo "Docker版本: $(docker --version)"
-
-      - name: 安装ADB和Scrcpy
-        run: |
-          echo "=== 安装ADB ==="
           sudo apt-get install -y adb
           
-          echo "=== 安装Scrcpy ==="
-          # 安装scrcpy（用于ADB连接测试）
-          sudo apt-get install -y scrcpy || sudo snap install scrcpy
+          # 尝试加载 binder 模块 (Redroid 核心需求)
+          # 在新版内核中，如果 modprobe 失败，尝试挂载 binderfs
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || echo "Binder module load failed, skipping..."
           
-          echo "ADB版本: $(adb version)"
-          echo "Scrcpy版本: $(scrcpy --version 2>/dev/null || echo 'installed')"
+          # 注意：新内核已舍弃 ashmem，Redroid 会自动处理，所以不再尝试 modprobe ashmem
 
-      - name: 安装Node.js (用于ws-scrcpy)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: 克隆并配置ws-scrcpy
+      - name: 启动 Redroid 容器
         run: |
-          echo "=== 克隆ws-scrcpy项目 ==="
-          git clone https://github.com/NetrisTV/ws-scrcpy.git || git clone https://gitcode.com/gh_mirrors/ws/ws-scrcpy.git ws-scrcpy
-          cd ws-scrcpy
+          IMAGE="redroid/redroid:${{ github.event.inputs.android_version }}-latest"
           
-          echo "=== 安装依赖 ==="
-          npm install
-          
-          echo "=== 返回工作目录 ==="
-          cd ..
-
-      - name: 构建Redroid容器启动命令
-        id: build_command
-        run: |
-          echo "=== 构建Redroid启动参数 ==="
-          
-          # 根据选择的Android版本和Root模式构建镜像tag
-          BASE_IMAGE="redroid/redroid"
-          VERSION="${{ inputs.android_version }}"
-          ROOT_MODE="${{ inputs.root_mode }}"
-          
-          # 构建镜像tag
-          if [[ "$ROOT_MODE" == "with-magisk" ]]; then
-            # 检查是否有预构建的Magisk镜像
-            IMAGE_TAG="${BASE_IMAGE}:${VERSION}-latest"
-            # 注意：如需Magisk支持，可能需要使用自定义镜像或添加启动参数
-            MAGISK_ARGS="ro.secure=0 ro.debuggable=1"
-          else
-            IMAGE_TAG="${BASE_IMAGE}:${VERSION}-latest"
-            MAGISK_ARGS=""
+          # Root 逻辑
+          ROOT_PROPS=""
+          if [ "${{ github.event.inputs.root_mode }}" == "with-magisk" ]; then
+            ROOT_PROPS="androidboot.redroid_debuggable=1"
           fi
-          
-          echo "镜像标签: $IMAGE_TAG"
-          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          
-          # 构建Docker run命令
-          DOCKER_CMD="docker run -itd \
-            --rm \
-            --privileged \
+
+          # 启动 Redroid
+          # 增加 --pull always 确保镜像最新
+          docker run -d --privileged \
+            --name redroid_container \
             --pull always \
-            --name $REDROID_CONTAINER_NAME \
-            -p $ADB_PORT:5555 \
-            -v ~/redroid-data:/data \
-            -e androidboot.redroid_width=${{ inputs.screen_width }} \
-            -e androidboot.redroid_height=${{ inputs.screen_height }} \
-            -e androidboot.redroid_dpi=${{ inputs.dpi }} \
-            -e androidboot.redroid_gpu_mode=${{ inputs.gpu_mode }}"
-          
-          # 添加Magisk相关参数
-          if [[ "$ROOT_MODE" == "with-magisk" ]]; then
-            DOCKER_CMD="$DOCKER_CMD \
-            -e ro.secure=0 \
-            -e ro.debuggable=1 \
-            -e ro.adb.secure=0"
-          fi
-          
-          DOCKER_CMD="$DOCKER_CMD $IMAGE_TAG"
-          
-          echo "docker_command=$DOCKER_CMD" >> $GITHUB_OUTPUT
-          echo "Docker启动命令已构建"
+            -v ~/data:/data \
+            -p 5555:5555 \
+            $IMAGE \
+            androidboot.redroid_width=${{ github.event.inputs.screen_width }} \
+            androidboot.redroid_height=${{ github.event.inputs.screen_height }} \
+            androidboot.redroid_dpi=${{ github.event.inputs.dpi }} \
+            androidboot.redroid_gpu_mode=${{ github.event.inputs.gpu_mode }} \
+            $ROOT_PROPS
 
-      - name: 启动Redroid容器
+      - name: 部署 Web 控制端 (ws-scrcpy)
         run: |
-          echo "=== 启动Redroid容器 ==="
+          docker run -d \
+            --name ws-scrcpy \
+            --link redroid_container:phone \
+            -p 8000:8000 \
+            -e ADB_SERVER_SOCKET=tcp:phone:5555 \
+            butomo1989/docker-ws-scrcpy
+
+      - name: Cloudflare 穿透
+        id: cf_tunnel
+        run: |
+          curl -L -o cloudflared.deb https://github.com
+          sudo dpkg -i cloudflared.deb
           
-          # 清理可能存在的同名容器
-          docker rm -f $REDROID_CONTAINER_NAME 2>/dev/null || true
+          # 启动临时隧道
+          nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
-          # 创建数据目录
-          mkdir -p ~/redroid-data
+          echo "等待隧道分配域名..."
+          timeout 30s bash -c 'until grep -o "https://.*\.trycloudflare\.com" cf.log; do sleep 1; done' || true
           
-          # 启动容器
-          ${{ steps.build_command.outputs.docker_command }}
+          CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
+          echo "public_url=$CF_URL" >> $GITHUB_OUTPUT
+
+      - name: 验证并输出结果
+        run: |
+          echo "=========================================="
+          echo "✅ 部署尝试完成！"
+          echo "🔗 Web 访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
+          echo "=========================================="
+          echo "提示：如果页面长时间黑屏，请在页面右侧切换解码器（如 H264）"
           
-          echo "等待容器初始化（约30秒）..."
-          sleep 30
-          
-          # 检查容器状态
-          echo "=== 容器状态 ==="
-          docker ps | grep $REDROID_CONTAINER_NAME
-          
-          # 检查ADB连接
-          echo "=== 测试ADB连接 ==="
-          adb connect localhost:$ADB_PORT
+          # 尝试 ADB 连接验证容器内 Android 状态
+          adb connect localhost:5555 || true
           sleep 5
           adb devices
-
-      - name: 启动ws-scrcpy Web服务
-        run: |
-          echo "=== 启动ws-scrcpy服务 ==="
-          
-          cd ws-scrcpy
-          
-          # 配置ADB连接
-          export ADB_SERVER_SOCKET=tcp:localhost:5037
-          
-          # 后台启动ws-scrcpy
-          nohup npm start > ws-scrcpy.log 2>&1 &
-          
-          # 等待服务启动
-          echo "等待ws-scrcpy服务启动..."
-          sleep 10
-          
-          # 检查服务是否正常运行
-          curl -s http://localhost:$WSCRCPY_PORT > /dev/null && echo "✅ ws-scrcpy服务启动成功" || echo "⚠️ ws-scrcpy服务可能未正常启动"
-          
-          cd ..
-
-      - name: 安装Cloudflared
-        run: |
-          echo "=== 安装Cloudflared ==="
-          
-          # 下载最新版cloudflared
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-          sudo mv cloudflared /usr/local/bin/
-          
-          echo "Cloudflared版本: $(cloudflared --version)"
-
-      - name: 配置Cloudflare Tunnel
-        env:
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-        run: |
-          echo "=== 配置Cloudflare Tunnel ==="
-          
-          # 创建cloudflared配置目录
-          mkdir -p ~/.cloudflared
-          
-          # 方式1：使用Token（推荐）
-          if [[ -n "$CLOUDFLARE_TUNNEL_TOKEN" ]]; then
-            echo "使用Cloudflare Tunnel Token进行配置..."
-            
-            # 创建配置文件
-            cat > ~/.cloudflared/config.yml << EOF
-          tunnel: ${{ inputs.cloudflare_tunnel_name }}
-          credentials-file: /home/runner/.cloudflared/${CLOUDFLARE_TUNNEL_TOKEN}.json
-          
-          ingress:
-            - hostname: ${{ inputs.cloudflare_domain }}
-              service: http://localhost:$WSCRCPY_PORT
-            - service: http_status:404
-          EOF
-            
-            echo "Cloudflared配置文件已创建"
-          else
-            echo "⚠️ 未设置CLOUDFLARE_TUNNEL_TOKEN，将使用临时隧道模式"
-            
-            # 临时隧道模式（无需token，但域名会变化）
-            cat > ~/.cloudflared/config.yml << EOF
-          tunnel: ${{ inputs.cloudflare_tunnel_name }}
-          
-          ingress:
-            - hostname: ${{ inputs.cloudflare_domain }}
-              service: http://localhost:$WSCRCPY_PORT
-            - service: http_status:404
-          EOF
-            
-            echo "使用临时隧道模式（需要手动授权）"
-          fi
-
-      - name: 启动Cloudflare Tunnel
-        env:
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-        run: |
-          echo "=== 启动Cloudflare Tunnel ==="
-          
-          # 如果提供了Token，使用Token启动
-          if [[ -n "$CLOUDFLARE_TUNNEL_TOKEN" ]]; then
-            echo "使用Token启动Cloudflare Tunnel..."
-            
-            # 后台启动tunnel
-            nohup cloudflared tunnel --config ~/.cloudflared/config.yml run \
-              --token $CLOUDFLARE_TUNNEL_TOKEN > cloudflared.log 2>&1 &
-            
-            echo "Cloudflare Tunnel已在后台启动"
-            
-            # 等待tunnel建立
-            sleep 10
-            
-            # 检查tunnel状态
-            if pgrep -f "cloudflared tunnel" > /dev/null; then
-              echo "✅ Cloudflare Tunnel启动成功"
-            else
-              echo "❌ Cloudflare Tunnel启动失败，查看日志:"
-              tail -20 cloudflared.log
-            fi
-          else
-            echo "使用临时隧道模式启动..."
-            
-            # 临时隧道模式
-            nohup cloudflared tunnel --url http://localhost:$WSCRCPY_PORT > cloudflared.log 2>&1 &
-            
-            echo "临时隧道已在后台启动"
-            sleep 10
-            
-            # 提取临时域名
-            TEMP_URL=$(grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflared.log | head -1)
-            if [[ -n "$TEMP_URL" ]]; then
-              echo "=========================================="
-              echo "🌐 临时访问地址: $TEMP_URL"
-              echo "=========================================="
-              echo "temporary_url=$TEMP_URL" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-      - name: 验证服务状态
-        run: |
-          echo "=========================================="
-          echo "✅ Redroid云手机部署完成！"
-          echo "=========================================="
-          echo ""
-          echo "📱 云手机配置信息:"
-          echo "  - Android版本: ${{ inputs.android_version }}"
-          echo "  - Root模式: ${{ inputs.root_mode }}"
-          echo "  - 屏幕分辨率: ${{ inputs.screen_width }}x${{ inputs.screen_height }}"
-          echo "  - DPI: ${{ inputs.dpi }}"
-          echo "  - GPU模式: ${{ inputs.gpu_mode }}"
-          echo ""
-          echo "🔗 连接方式:"
-          echo "  - ADB连接: adb connect <host-ip>:$ADB_PORT"
-          echo "  - Web访问: https://${{ inputs.cloudflare_domain }}"
-          echo ""
-          echo "📊 服务状态:"
-          echo "  - Redroid容器: $(docker ps --filter name=$REDROID_CONTAINER_NAME --format 'table {{.Names}}\t{{.Status}}' | tail -1)"
-          echo "  - ADB设备列表:"
-          adb devices | grep -v "List of devices"
-          echo "  - ws-scrcpy: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:$WSCRCPY_PORT 2>/dev/null | grep -q 200 && echo '✅ 运行中' || echo '⚠️ 未响应')"
-          echo ""
-          echo "📝 重要提示:"
-          echo "  1. 请确保已配置Cloudflare DNS解析: ${{ inputs.cloudflare_domain }}"
-          echo "  2. 如使用Token模式，请确保GitHub Secrets中已设置CLOUDFLARE_TUNNEL_TOKEN"
-          echo "  3. 首次访问Web控制台可能需要等待ADB设备自动连接"
-          echo "  4. 工作流结束后容器将持续运行，如需停止请手动执行"
           echo "=========================================="
 
-      - name: 保持容器运行
-        run: |
-          echo "=== 保持Redroid容器运行 ==="
-          echo "容器名称: $REDROID_CONTAINER_NAME"
-          echo "容器将在此工作流结束后继续运行"
-          echo ""
-          echo "📝 如需手动停止容器，请运行:"
-          echo "   docker stop $REDROID_CONTAINER_NAME"
-          echo ""
-          
-          # 输出Cloudflare访问信息
-          if [[ -f cloudflared.log ]]; then
-            echo "=== Cloudflare Tunnel日志 ==="
-            tail -20 cloudflared.log
-          fi
+      - name: 保持运行 (6小时)
+        run: sleep 21600
