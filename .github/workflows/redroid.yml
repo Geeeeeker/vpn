@@ -1,4 +1,4 @@
-name: Redroid 云手机 (二进制运行版)
+name: Redroid 云手机 (Node一键启动版)
 
 on:
   workflow_dispatch:
@@ -39,16 +39,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 准备环境 (ADB & 内核模块)
+      - name: 1. 准备环境 (ADB & Node.js)
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb nodejs npm
-          sudo modprobe binder_linux || echo "Binder 加载成功"
-
+          sudo apt-get install -y adb
+          # 确保有 Node 运行环境
+          node -v
+          
       - name: 2. 启动 Redroid 容器
         run: |
           IMAGE="redroid/redroid:${{ github.event.inputs.android_version }}-latest"
-          # Root 逻辑：Redroid 官方参数
           ROOT_PARAM=""
           if [ "${{ github.event.inputs.root_mode }}" == "with-root" ]; then
             ROOT_PARAM="androidboot.redroid_debuggable=1 ro.secure=0 ro.debuggable=1"
@@ -65,20 +65,17 @@ jobs:
             androidboot.redroid_gpu_mode=guest \
             $ROOT_PARAM
           
-          # 等待并连接
+          # 等待并连接 adb
           sleep 10
           adb connect 127.0.0.1:5555
 
-      - name: 3. 运行 Web 界面 (Node.js 二进制方式)
+      - name: 3. 运行 Web 界面 (使用 npx 免克隆启动)
         run: |
-          # 克隆并运行现成的 Web 端方案，不依赖 Docker 镜像
-          # 这里使用成熟的 ws-scrcpy 源码运行
-          git clone https://github.com
-          cd ws-scrcpy
-          npm install
-          # 启动服务并放入后台
-          nohup npm start > web.log 2>&1 &
+          # 使用 npx 直接运行 ws-scrcpy，不依赖 docker 和本地克隆
+          # 这样可以保证一定能运行最新版且不需要手动安装依赖
+          nohup npx ws-scrcpy > web.log 2>&1 &
           echo "Web 服务已在后台启动"
+          sleep 10 # 给 npx 一些下载运行的时间
 
       - name: 4. Cloudflare 公网穿透
         id: cf_tunnel
@@ -86,25 +83,29 @@ jobs:
           curl -L -o cloudflared.deb https://github.com
           sudo dpkg -i cloudflared.deb
           
-          # ws-scrcpy 默认监听端口为 8000
+          # ws-scrcpy 默认监听端口通常是 8000
           nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
           echo "正在获取公网链接..."
-          sleep 20
-          CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
-          echo "public_url=$CF_URL" >> $GITHUB_OUTPUT
+          # 循环等待直到域名出现或超时
+          for i in {1..30}; do
+            CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
+            if [ ! -z "$CF_URL" ]; then
+              echo "public_url=$CF_URL" >> $GITHUB_OUTPUT
+              break
+            fi
+            sleep 1
+          done
 
-      - name: 5. 最终状态输出
+      - name: 5. 最终输出
         run: |
           echo "=========================================="
           echo "✅ 云手机部署成功！"
-          echo "🔗 公网访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
+          echo "🔗 访问地址: ${{ steps.cf_tunnel.outputs.public_url }}"
           echo "=========================================="
-          echo "📱 手机信息:"
-          adb -s 127.0.0.1:5555 shell getprop ro.build.version.release
-          echo "DPI: ${{ github.event.inputs.dpi }}"
+          echo "📱 手机状态:"
+          adb devices
           echo "=========================================="
-          echo "💡 提示: 进入网页后选择 H264 模式流畅度更高"
 
       - name: 持续运行 (6小时)
         run: sleep 21600
