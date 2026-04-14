@@ -38,34 +38,38 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 安装依赖 (Docker, ADB, Node.js, Cloudflared)
+      - name: 安装依赖 (ADB, Node.js, Cloudflared)
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb curl docker.io
-          sudo systemctl start docker
-          sudo systemctl enable docker
-          # 安装 Node.js (包含 npx)
+          sudo apt-get install -y adb curl
+          
+          # 安装 Node.js 18 (包含 npx)
           curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
           sudo apt-get install -y nodejs
+          
           # 安装 cloudflared
           curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
+          
+          # 验证 Docker 可用 (ubuntu-latest 自带)
+          docker --version
 
-      - name: 挂载 binderfs (绕过内核模块缺失)
+      - name: 挂载 binderfs (无需内核模块)
         run: |
-          # 创建 binderfs 挂载点
+          # 创建挂载点
           sudo mkdir -p /dev/binderfs
-          # 挂载 binderfs (无需内核模块)
+          # 挂载 binder 文件系统
           sudo mount -t binder binder /dev/binderfs
-          # 创建设备节点: binder, hwbinder, vndbinder
-          sudo binder-control --create /dev/binderfs/binder
-          sudo binder-control --create /dev/binderfs/hwbinder
-          sudo binder-control --create /dev/binderfs/vndbinder
-          # 设置权限让容器可读写
+          # 动态创建 binder 设备节点
+          echo "binder" | sudo tee /dev/binderfs/binder-control > /dev/null
+          echo "hwbinder" | sudo tee /dev/binderfs/binder-control > /dev/null
+          echo "vndbinder" | sudo tee /dev/binderfs/binder-control > /dev/null
+          # 设置权限，允许容器内访问
           sudo chmod 666 /dev/binderfs/*
-          echo "binderfs 挂载成功"
+          # 验证设备节点已创建
+          ls -la /dev/binderfs/
 
-      - name: 启动 Redroid 容器 (绑定 binder 设备)
+      - name: 启动 Redroid 容器
         run: |
           IMAGE="redroid/redroid:${{ github.event.inputs.android_version }}-latest"
           ROOT_PARAM=""
@@ -90,14 +94,14 @@ jobs:
 
           # 等待容器初始化
           sleep 15
-          # 连接 ADB
+          # 尝试 ADB 连接
           adb connect 127.0.0.1:5555 || true
 
       - name: 启动 Web 控制端 ws-scrcpy
         run: |
-          # 确保端口空闲
+          # 清理可能占用的端口
           sudo lsof -ti:8000 | xargs sudo kill -9 || true
-          # 启动服务，记录日志
+          # 启动 ws-scrcpy 并记录日志
           nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
           # 等待端口监听 (最多 30 秒)
           for i in {1..30}; do
@@ -107,7 +111,7 @@ jobs:
             fi
             sleep 1
           done
-          # 验证服务可用
+          # 如果仍未监听，输出日志并失败
           if ! ss -tlnp | grep -q ':8000'; then
             echo "❌ ws-scrcpy 启动失败，web.log 内容："
             cat web.log
@@ -117,7 +121,7 @@ jobs:
       - name: 启动 Cloudflared 隧道
         id: tunnel
         run: |
-          # 确认本地服务响应
+          # 确认本地服务可访问
           curl -s http://localhost:8000 > /dev/null || { echo "本地服务无响应"; exit 1; }
           # 启动隧道
           cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
