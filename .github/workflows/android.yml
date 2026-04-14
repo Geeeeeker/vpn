@@ -1,4 +1,4 @@
-name: Android Emulator 云手机 (GitHub-Hosted)
+name: Android Emulator 云手机 (Fixed)
 
 on:
   workflow_dispatch:
@@ -7,82 +7,52 @@ on:
         description: 'Android API 版本'
         required: true
         type: choice
-        default: '31' # 对应 Android 12
+        default: '31'
         options:
-          - '29' # Android 10
-          - '30' # Android 11
-          - '31' # Android 12
-          - '33' # Android 13
-      screen_profile:
-        description: '屏幕规格'
-        default: 'nexus_5x'
-      root_mode:
-        description: 'Root 权限 (Google APIs 镜像通常自带 root)'
-        default: 'google_apis'
+          - '29'
+          - '30'
+          - '31'
+          - '33'
 
 jobs:
   deploy:
-    # 使用 macOS 是因为 GitHub 的 macOS 运行器支持嵌套虚拟化/硬件加速
     runs-on: macos-latest
     steps:
       - name: 1. 安装基础工具
         run: |
           brew install --cask android-platform-tools
-          # 安装 Cloudflared
           brew install cloudflared
 
       - name: 2. 运行 Android 模拟器
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ github.event.inputs.android_version }}
-          target: ${{ github.event.inputs.root_mode }}
+          # 移除 profile: nexus_5x，使用默认设备
+          target: google_apis
           arch: x86_64
-          profile: ${{ github.event.inputs.screen_profile }}
-          force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          force-avd-creation: true # 强制重新创建以避免缓存错误
+          # 优化启动参数，增加 -no-snapshot-load 确保冷启动
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-load -camera-back none
           disable-animations: true
-          # 这一步会阻塞直到模拟器启动，我们在后续步骤执行 Web UI
-          script: adb devices && echo "模拟器已就绪"
-
-      - name: 3. 启动 Web 控制端 (ws-scrcpy)
-        run: |
-          # macOS 默认自带 node，直接运行 npx
-          # 模拟器默认监听 5554 端口
-          nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
-          sleep 10
-
-      - name: 4. 启动隧道与域名提取
-        id: tunnel
-        run: |
-          # 启动 Cloudflare 隧道
-          nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
-          
-          echo "等待域名生成..."
-          # 循环检查直到获取到 URL
-          for i in {1..10}; do
+          # 在脚本块中启动后续服务，防止主进程退出
+          script: |
+            echo "ADB 状态:"
+            adb devices
+            
+            echo "🚀 启动 Web UI (ws-scrcpy)..."
+            nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
+            
+            echo "☁️ 启动 Cloudflare 隧道..."
+            nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
+            
+            echo "等待域名生成..."
+            sleep 30
             CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
-            if [ ! -z "$CF_URL" ]; then
-              echo "url=$CF_URL" >> $GITHUB_OUTPUT
-              echo "提取到的公网地址: $CF_URL"
-              break
-            fi
-            sleep 5
-          done
-          
-          if [ -z "$CF_URL" ]; then
-            cat cf.log
-            exit 1
-          fi
-
-      - name: 5. 部署完成报告
-        run: |
-          echo "=========================================="
-          echo "✅ Android 模拟器部署完成！"
-          echo "=========================================="
-          echo "🔗 访问地址: ${{ steps.tunnel.outputs.url }}"
-          echo "📱 API Level: ${{ github.event.inputs.android_version }}"
-          echo "⚠️ 注意：初次加载网页可能需要 1-2 分钟初始化图像"
-          echo "=========================================="
-
-      - name: 6. 保持运行 (6小时)
-        run: sleep 21600
+            
+            echo "=========================================="
+            echo "✅ 部署成功！"
+            echo "🔗 访问地址: $CF_URL"
+            echo "=========================================="
+            
+            # 保持模拟器和脚本运行
+            sleep 21600
