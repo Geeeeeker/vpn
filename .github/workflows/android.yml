@@ -1,32 +1,29 @@
-name: Android Emulator 云手机 (Ubuntu 稳定版)
+name: Android Emulator 云手机 (稳定修复版)
 
 on:
   workflow_dispatch:
     inputs:
       android_version:
-        description: 'Android 版本 (建议 25, 软件渲染兼容性最好)'
+        description: 'Android 版本 (建议 25)'
         required: true
         type: choice
         default: '25'
         options:
-          - '24' # Android 7.0
-          - '25' # Android 7.1
-          - '29' # Android 10.0 (可能极慢)
-      keep_alive:
-        description: '保持运行分钟数'
-        default: '360'
+          - '24'
+          - '25'
+          - '29'
 
 jobs:
-  run-emulator:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 安装基础工具
+      - name: 1. 安装 Cloudflared & ADB
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb curl
-          # 安装 Cloudflared
-          curl -L -o cloudflared.deb https://github.com
-          sudo dpkg -i cloudflared.deb
+          sudo apt-get install -y adb
+          # 参考你提供的成功案例：使用 -L 确保跟随重定向，并添加重试机制
+          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb || (sleep 5 && sudo apt-get install -f -y)
 
       - name: 2. 运行 Android 模拟器
         uses: reactivecircus/android-emulator-runner@v2
@@ -35,59 +32,56 @@ jobs:
           target: google_apis
           arch: x86_64
           force-avd-creation: true
-          # 关键参数：禁用硬件加速 (-accel off)，强制软件渲染 (swiftshader_indirect)
+          # 核心修正：Ubuntu 托管环境无 KVM，必须强制关闭加速并使用软件渲染
           emulator-options: -no-window -no-audio -no-boot-anim -accel off -gpu swiftshader_indirect -camera-back none
           disable-animations: true
-          
           script: |
             echo "⌛ 等待 ADB 连接..."
             adb wait-for-device
             
-            echo "⌛ 等待系统完全启动 (软件渲染需要 5-8 分钟)..."
-            # 轮询检查启动状态
-            for i in {1..50}; do
+            echo "⌛ 等待系统启动 (软件渲染约需 5-10 分钟)..."
+            for i in {1..60}; do
               BOOT=$(adb shell getprop sys.boot_completed | tr -d '\r')
               if [ "$BOOT" = "1" ]; then
                 echo "✅ 模拟器就绪！"
                 break
               fi
-              echo "等待中... ($i/50)"
-              sleep 15
+              echo "等待中... ($i/60)"
+              sleep 10
             done
 
             echo "🚀 启动 Web 控制端 (ws-scrcpy)..."
-            # Ubuntu 环境需要先安装 node 环境（GitHub 自带）
+            # 自动安装并运行 Web UI
             nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
             
             echo "☁️ 开启 Cloudflare 隧道..."
-            nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
+            # 采用你提供的案例逻辑：将隧道指向 Web UI 端口
+            cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
             
-            echo "🔗 提取访问地址..."
+            echo "🔗 正在提取访问地址..."
             sleep 30
             CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
             
             if [ -z "$CF_URL" ]; then
-              echo "❌ 隧道生成失败，日志如下："
+              echo "❌ 隧道启动失败，查看日志:"
               cat cf.log
               exit 1
             fi
 
-            echo "=========================================="
-            echo "🚀 部署成功！"
-            echo "🔗 访问链接: $CF_URL"
-            echo "📱 系统版本: Android ${{ github.event.inputs.android_version }}"
-            echo "⚠️ 提示: 软件渲染比较卡顿，点击后请等待画面响应"
-            echo "=========================================="
+            echo "=================================================="
+            echo "🚀 云手机已成功部署！"
+            echo "--------------------------------------------------"
+            echo "浏览器访问地址:"
+            echo "$CF_URL"
+            echo "=================================================="
+            
+            # 保持运行 6 小时
+            sleep 21600
 
-            # 保持活跃
-            MINUTES=${{ github.event.inputs.keep_alive }}
-            for i in $(seq 1 $MINUTES); do
-              echo "Keep-alive: $(date) - 运行中"
-              sleep 60
-            done
-
-      - name: 故障排查日志
+      - name: 故障排查
         if: failure()
         run: |
-          cat web.log || true
+          echo "--- CF 日志 ---"
           cat cf.log || true
+          echo "--- Web 日志 ---"
+          cat web.log || true
