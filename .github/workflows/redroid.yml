@@ -1,10 +1,10 @@
-name: Redroid 云手机 (全版本修复版)
+name: Redroid 云手机 (稳定恢复版)
 
 on:
   workflow_dispatch:
     inputs:
       android_version:
-        description: 'Android 版本 (支持 8.1-15)'
+        description: 'Android 版本'
         required: true
         type: choice
         default: '11.0.0'
@@ -21,10 +21,10 @@ on:
         description: 'Root 权限'
         required: true
         type: choice
-        default: 'without-root' # 默认非 Root
+        default: 'without-root'
         options:
-          - 'without-root'
           - 'with-root'
+          - 'without-root'
       screen_width:
         description: '宽度'
         default: '720'
@@ -32,37 +32,38 @@ on:
         description: '高度'
         default: '1280'
       dpi:
-        description: '屏幕 DPI (已调高)'
+        description: 'DPI (超清)'
         default: '440'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 极速安装 Cloudflared (避开 dpkg 报错)
+      - name: 1. 安装 Cloudflared (原 dpkg 方式修复版)
         run: |
           sudo apt-get update
-          sudo apt-get install -y adb wget
+          sudo apt-get install -y adb curl
           
-          # 直接下载 Linux 二进制文件，不使用 deb 包，百分百避开格式错误
-          wget -q https://github.com -O cloudflared
-          chmod +x cloudflared
-          sudo mv cloudflared /usr/local/bin/cloudflared
-          cloudflared --version
+          # 修正后的下载：使用 -L 并指向确定的 release 路径
+          curl -L https://github.com -o cloudflared.deb
+          
+          # 校验文件是否为 HTML（防止再次下错）
+          if grep -q "<!DOCTYPE html>" cloudflared.deb; then
+            echo "❌ 下载到了网页而非安装包，尝试备用地址..."
+            curl -L https://github.com -o cloudflared.deb
+          fi
+          
+          sudo dpkg -i cloudflared.deb
 
       - name: 2. 启动 Redroid 容器
         run: |
           IMAGE="redroid/redroid:${{ github.event.inputs.android_version }}-latest"
-          
-          # 内核模块尝试 (GitHub 环境不一定成功，但不影响容器启动)
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || echo "Skip Binder"
-          
-          # Root 参数处理
           ROOT_PARAM=""
           if [ "${{ github.event.inputs.root_mode }}" == "with-root" ]; then
             ROOT_PARAM="androidboot.redroid_debuggable=1 ro.secure=0 ro.debuggable=1"
           fi
 
+          # 启动 Android
           docker run -d --privileged \
             --name redroid \
             --network host \
@@ -79,7 +80,7 @@ jobs:
 
       - name: 3. 部署 Web 控制端 (yumechan 方案)
         run: |
-          # 该镜像目前最稳定，通过 host 网络直接访问 127.0.0.1
+          # 这是目前唯一能避免 502 的稳定镜像
           docker run -d \
             --name scrcpy-web \
             --network host \
@@ -87,46 +88,38 @@ jobs:
             -e ADB_SERVER_IP=127.0.0.1 \
             yumechan/scrcpy-web:latest
 
-          echo "等待端口响应..."
-          timeout 60s bash -c 'until curl -s localhost:8000 > /dev/null; do sleep 2; done' || echo "Web服务启动中..."
+          echo "等待 Web 服务响应..."
+          timeout 60s bash -c 'until curl -s localhost:8000 > /dev/null; do sleep 3; done' || echo "Web端启动较慢..."
 
-      - name: 4. 启动隧道并抓取域名
+      - name: 4. 启动隧道与动态域名提取 (高速参考版)
         id: tunnel
         run: |
-          # 隧道指向 8000 端口
-          cloudflared tunnel --url http://127.0.0.1:8000 > cf.log 2>&1 &
+          # 参考案例：启动并捕获日志
+          cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
-          echo "正在提取动态域名..."
-          # 等待最多 40 秒抓取域名
-          for i in {1..20}; do
-            CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
-            if [ ! -z "$CF_URL" ]; then
-              echo "url=$CF_URL" >> $GITHUB_OUTPUT
-              break
-            fi
-            sleep 2
-          done
+          # 等待建立连接
+          sleep 25
+          
+          # 精准提取域名
+          CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
           
           if [ -z "$CF_URL" ]; then
-            echo "❌ 隧道域名生成失败，日志:"
+            echo "❌ 隧道启动失败，查看日志:"
             cat cf.log
             exit 1
           fi
+          echo "url=$CF_URL" >> $GITHUB_OUTPUT
 
-      - name: 5. 验证部署结果
+      - name: 5. 最终验证
         run: |
           echo "=========================================="
-          echo "✅ 云手机部署完成！"
+          echo "✅ 部署完成！"
+          echo "🔗 访问地址: ${{ steps.tunnel.outputs.url }}"
           echo "=========================================="
-          echo "🔗 访问地址 (复制到浏览器):"
-          echo "   ${{ steps.tunnel.outputs.url }}"
-          echo ""
-          echo "📊 状态摘要:"
-          echo "  - 版本: Android ${{ github.event.inputs.android_version }}"
-          echo "  - DPI: ${{ github.event.inputs.dpi }}"
-          echo "  - 容器: $(docker ps --filter name=redroid --format '{{.Status}}')"
-          adb devices | grep "5555" || echo "  ⚠️ ADB 仍在启动，请在网页稍后刷新"
+          echo "📊 状态检查:"
+          docker ps --format "table {{.Names}}\t{{.Status}}"
+          adb devices
           echo "=========================================="
 
-      - name: 6. 持续运行
+      - name: 6. 保持运行
         run: sleep 21600
