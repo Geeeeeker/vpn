@@ -1,60 +1,37 @@
-name: Android Emulator 云手机 (Fixed)
-
-on:
-  workflow_dispatch:
-    inputs:
-      android_version:
-        description: 'Android API 版本'
-        required: true
-        type: choice
-        default: '31'
-        options:
-          - '29'
-          - '30'
-          - '31'
-          - '33'
-
-jobs:
-  deploy:
-    runs-on: macos-latest
-    steps:
-      - name: 1. 安装基础工具
-        run: |
-          brew install --cask android-platform-tools
-          brew install cloudflared
-
       - name: 2. 运行 Android 模拟器
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ github.event.inputs.android_version }}
           target: google_apis
-          # 关键修改：必须匹配 M1/M2 芯片的架构
           arch: arm64-v8a
           force-avd-creation: true
-          # 移除针对 x86 的加速参数，使用默认即可
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-load
+          # 关键修改：在 ARM macOS 上，不指定 gpu 模式通常最稳定，或使用 host
+          emulator-options: -no-window -no-audio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
-            echo "🚀 正在启动服务..."
-            # 保持之前的逻辑
+            echo "⌛ 等待模拟器完全启动..."
+            adb wait-for-device
+            
+            # 确保系统界面已加载
+            until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do
+              echo "仍在启动中..."
+              sleep 5
+            done
+            echo "✅ 模拟器就绪！"
+
+            echo "🚀 启动 Web UI 与 隧道..."
             nohup npx ws-scrcpy --port 8000 > web.log 2>&1 &
             nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
             
-            # 循环检查直到域名生成
-            for i in {1..20}; do
-              CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
-              if [ ! -z "$CF_URL" ]; then
-                echo "=========================================="
-                echo "✅ 访问地址: $CF_URL"
-                echo "=========================================="
-                break
-              fi
-              sleep 5
+            echo "🔗 提取访问地址..."
+            timeout 60s sh -c 'until grep -o "https://.*\.trycloudflare\.com" cf.log; do sleep 2; done' | head -n 1
+            
+            echo "=========================================="
+            echo "📱 云手机运行中，请通过上方链接访问"
+            echo "=========================================="
+            
+            # 保持活跃防止 GitHub 认为任务卡死而杀掉进程
+            for i in {1..360}; do
+              echo "Keep-alive: $(date)"
+              sleep 60
             done
-            
-            # 模拟器运行中持续打印日志防止超时
-            while true; do adb shell getprop sys.boot_completed; sleep 60; done
-
-            
-            # 保持模拟器和脚本运行
-            sleep 21600
