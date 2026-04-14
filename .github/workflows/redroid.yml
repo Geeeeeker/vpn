@@ -1,0 +1,9 @@
+- name: 启动多实例Redroid
+  run: |
+    for i in {1..3}; do
+      port=$((5555 + i))
+      docker run -itd --privileged \
+        --name redroid-$i \
+        -p $port:5555 \
+        redroid/redroid:${{ inputs.android_version }}-latest
+    done
