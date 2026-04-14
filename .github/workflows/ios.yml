@@ -1,0 +1,41 @@
+name: iOS App Decryption Workflow
+
+on:
+  workflow_dispatch:                     # 1
+    inputs:
+      bundle_id:
+        description: '应用的 Bundle ID'   # 2
+        required: true
+
+jobs:
+  decrypt_app:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH connection to jailbroken iPhone
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.JAILBROKEN_PHONE_SSH_KEY }}   # 3
+
+      - name: Install frida-ios-dump on the runner
+        run: |
+          python3 -m pip install frida-tools
+          git clone https://github.com/AloneMonkey/frida-ios-dump.git
+          cd frida-ios-dump
+          pip install -r requirements.txt
+
+      - name: Decrypt and dump the app
+        run: |
+          ssh -o StrictHostKeyChecking=no root@${{ secrets.JAILBROKEN_PHONE_IP }} "
+            echo 'Starting decryption for ${{ github.event.inputs.bundle_id }}'
+          "
+          cd frida-ios-dump
+          python3 dump.py -o decrypted.ipa ${{ github.event.inputs.bundle_id }}   # 4
+
+      - name: Upload decrypted IPA as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: decrypted-app
+          path: frida-ios-dump/*.ipa   # 5
