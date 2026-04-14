@@ -1,76 +1,124 @@
-name: High-Speed-CF-Proxy（高速）
+name: Redroid 云手机部署 (v8.1-15)
+
 on:
   workflow_dispatch:
+    inputs:
+      android_version:
+        description: 'Android 版本'
+        required: true
+        type: choice
+        default: '11.0.0'
+        options:
+          - '8.1.0'
+          - '9.0.0'
+          - '10.0.0'
+          - '11.0.0'
+          - '12.0.0'
+          - '13.0.0'
+          - '14.0.0_64only'
+          - '15.0.0_64only'
+      root_mode:
+        description: 'Root 权限模式'
+        required: true
+        type: choice
+        default: 'without-root' # 默认非 Root
+        options:
+          - 'with-magisk'      # 开启调试级 Root
+          - 'without-root'     # 完全非 Root
+      screen_width:
+        description: '屏幕宽度'
+        default: '1080'
+      screen_height:
+        description: '屏幕高度'
+        default: '1920'
+      dpi:
+        description: '屏幕 DPI (默认调高)'
+        default: '480'
+      gpu_mode:
+        description: 'GPU 加速模式'
+        required: true
+        type: choice
+        default: 'guest'
+        options:
+          - 'guest'
+          - 'host'
+          - 'auto'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Xray & Cloudflared
+      - name: 优化系统内核
         run: |
-          # 1. 使用 sudo 安装 Xray (核心修正)
-          curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh | sudo bash -s -- install
-          
-          # 2. 安装 Cloudflared
-          curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared.deb
+          sudo apt-get update
+          sudo apt-get install -y linux-modules-extra-$(uname -r) adb
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+          sudo modprobe ashmem_linux
 
-      - name: Generate WS Config
-        id: vars
+      - name: 启动 Redroid 容器
         run: |
-          # 生成 UUID
-          UUID=$(xray uuid)
-          echo "uuid=$UUID" >> $GITHUB_OUTPUT
+          # 定义镜像
+          IMAGE="redroid/redroid:${{ github.event.inputs.android_version }}-latest"
           
-          # 构造 VLESS-WS 配置
-          cat <<EOF > config.json
-          {
-            "inbounds": [{
-              "port": 8080,
-              "protocol": "vless",
-              "settings": {"clients": [{"id": "$UUID"}], "decryption": "none"},
-              "streamSettings": {
-                "network": "ws",
-                "wsSettings": {"path": "/speedtest"}
-              }
-            }],
-            "outbounds": [{"protocol": "freedom"}]
-          }
-          EOF
-
-      - name: Start Services
-        run: |
-          # 1. 启动 Xray (必须用 sudo)
-          sudo xray run -c $(pwd)/config.json > xray.log 2>&1 &
-          
-          # 2. 启动 Cloudflare 隧道
-          cloudflared tunnel --url http://localhost:8080 > cf.log 2>&1 &
-          
-          # 等待隧道建立域名
-          sleep 20
-
-      - name: Output Link
-        run: |
-          # 从日志中提取随机生成的 .trycloudflare.com 域名
-          CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1 | sed 's/https:\/\///')
-          
-          if [ -z "$CF_URL" ]; then
-            echo "❌ 隧道启动失败，请检查 cf.log:"
-            cat cf.log
-            exit 1
+          # Root 逻辑处理：Redroid 官方通过增加相关属性开启开发版 Root
+          ROOT_PROPS=""
+          if [ "${{ github.event.inputs.root_mode }}" == "with-magisk" ]; then
+            ROOT_PROPS="ro.debuggable=1 ro.secure=0"
           fi
+
+          docker run -d --privileged \
+            --name redroid_container \
+            -v ~/data:/data \
+            -p 5555:5555 \
+            $IMAGE \
+            androidboot.redroid_width=${{ github.event.inputs.screen_width }} \
+            androidboot.redroid_height=${{ github.event.inputs.screen_height }} \
+            androidboot.redroid_dpi=${{ github.event.inputs.dpi }} \
+            androidboot.redroid_gpu_mode=${{ github.event.inputs.gpu_mode }} \
+            $ROOT_PROPS
+
+      - name: 部署 Web 控制端 (ws-scrcpy)
+        run: |
+          docker run -d \
+            --name ws-scrcpy \
+            --link redroid_container:phone \
+            -p 8000:8000 \
+            -e ADB_SERVER_SOCKET=tcp:phone:5555 \
+            butomo1989/docker-ws-scrcpy
+
+      - name: Cloudflare 穿透
+        id: cf_tunnel
+        run: |
+          curl -L -o cloudflared.deb https://github.com
+          sudo dpkg -i cloudflared.deb
           
-          UUID="${{ steps.vars.outputs.uuid }}"
+          # 启动匿名隧道并将输出存入日志
+          nohup cloudflared tunnel --url http://localhost:8000 > cf.log 2>&1 &
           
-          # 拼接 VLESS-WS-TLS 链接
-          LINK="vless://$UUID@$CF_URL:443?encryption=none&security=tls&type=ws&host=$CF_URL&path=%2Fspeedtest#CF-HighSpeed"
-          
-          echo "=================================================="
-          echo "🚀 极速节点已部署！"
-          echo "--------------------------------------------------"
-          echo "手机一键导入链接:"
-          echo "$LINK"
-          echo "=================================================="
-          
-          # 保持运行 6 小时
-          sleep 21600
+          # 等待链接生成
+          sleep 20
+          CF_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cf.log | head -n 1)
+          echo "public_url=$CF_URL" >> $GITHUB_OUTPUT
+
+      - name: 验证服务状态
+        run: |
+          echo "=========================================="
+          echo "✅ Redroid 云手机部署完成！"
+          echo "=========================================="
+          echo ""
+          echo "📱 配置清单:"
+          echo "  - 版本: Android ${{ github.event.inputs.android_version }}"
+          echo "  - 模式: ${{ github.event.inputs.root_mode }}"
+          echo "  - 分辨率: ${{ github.event.inputs.screen_width }}x${{ github.event.inputs.screen_height }}"
+          echo "  - DPI: ${{ github.event.inputs.dpi }}"
+          echo ""
+          echo "🔗 访问地址 (复制到浏览器):"
+          echo "  ${{ steps.cf_tunnel.outputs.public_url }}"
+          echo ""
+          echo "📊 检查结果:"
+          adb connect localhost:5555
+          adb devices
+          echo "=========================================="
+
+      - name: 保持运行 (6小时)
+        run: sleep 21600
