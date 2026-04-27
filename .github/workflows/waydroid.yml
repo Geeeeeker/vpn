@@ -1,0 +1,91 @@
+name: Waydroid + ADB via Cloudflare Tunnel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  waydroid:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install kernel headers for module compilation
+      run: |
+        sudo apt update
+        sudo apt install -y linux-headers-$(uname -r) dkms
+
+    - name: Compile and load binder/ashmem modules
+      run: |
+        git clone https://github.com/ikuaki1009/anbox-modules
+        cd anbox-modules
+        sudo ./INSTALL.sh
+        # 确认模块是否加载成功
+        sudo modprobe binder_linux
+        sudo modprobe ashmem_linux
+        lsmod | grep -E "binder|ashmem"
+
+    - name: Install Waydroid and dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y curl ca-certificates xwayland mutter
+        # 安装 Waydroid
+        export DISTRO="$(lsb_release -cs)"
+        curl https://repo.waydro.id | sudo bash
+        sudo apt update
+        sudo apt install -y waydroid
+        # 初始化 Waydroid（下载系统镜像）
+        sudo waydroid init
+
+    - name: Configure Waydroid network (disable nft/iptables-legacy)
+      run: |
+        sudo sed -i~ -E 's/=.\$\(command -v (nft|ip6?tables-legacy).*/=/g' \
+          /usr/lib/waydroid/data/scripts/waydroid-net.sh
+
+    - name: Start Mutter (headless Wayland compositor)
+      run: |
+        mutter --wayland --headless --virtual-monitor 1280x720 &
+        sleep 3
+
+    - name: Start Waydroid container
+      run: |
+        sudo waydroid session start &
+        # 等待 Android 系统完全启动
+        sleep 60
+        # 开启 Android 系统的无线 ADB 调试（需要 root 权限，默认已开启）
+        # 但我们需要确认 ADB 服务监听了 TCP 5555 端口
+        # 在 Waydroid 容器内设置 adbd 重启
+        sudo waydroid shell -- setprop persist.adb.tcp.port 5555
+        sudo waydroid shell -- stop adbd
+        sudo waydroid shell -- start adbd
+        sleep 5
+        # 验证 ADB 端口在 Waydroid 内部是否开放
+        sudo waydroid shell -- netstat -an | grep 5555
+
+    - name: Test network inside Waydroid (optional)
+      run: |
+        sudo waydroid shell -- curl -v https://www.google.com || echo "Network might be slightly delayed"
+
+    - name: Install cloudflared and expose ADB port
+      run: |
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared-linux-amd64.deb
+        # 创建 TCP 隧道，将 Waydroid 内部 5555 转发到公网
+        nohup cloudflared tunnel --url tcp://localhost:5555 --no-autoupdate > tunnel.log 2>&1 &
+        echo "Cloudflared tunnel started. Waiting for URL..."
+        sleep 10
+        # 提取公网地址
+        TUNNEL_URL=$(grep -oP 'https://\K\S+\.trycloudflare\.com' tunnel.log | head -1)
+        if [ -z "$TUNNEL_URL" ]; then
+          echo "Failed to extract tunnel URL. Printing full log:"
+          cat tunnel.log
+        else
+          echo "==================================================="
+          echo " ADB connection command:"
+          echo " adb connect ${TUNNEL_URL}:443"
+          echo "==================================================="
+        fi
+        # 防止工作流立即结束，保持隧道存活一段时间
+        sleep 300
