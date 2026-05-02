@@ -313,44 +313,44 @@ jobs:
           DOMAIN="${{ needs.issue-certs.outputs.cert_domain }}"
           
           cat > release-notes.md << EOF
-      ## 🚀 ngrok v1 自定义编译版本
-      
-      **🌐 域名**: \`$DOMAIN\`
-      **📅 构建时间**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-      **🔒 证书类型**: Let's Encrypt (Dynv6 DNS 验证)
-      **⏰ 证书有效期**: 90 天（自动续期）
-      
-      ### 📦 包含的文件
-      
-      #### 🐧 Linux (deb 包)
-      - \`ngrok_*_amd64.deb\` - x86_64 架构（客户端 + 服务端）
-      - \`ngrok_*_arm64.deb\` - ARM64 架构（客户端 + 服务端）
-      
-      #### 🍎 macOS (zip 包)
-      - \`ngrok_*_darwin_amd64.zip\` - Intel 处理器
-
-      #### 🪟 Windows (zip 包)
-      - \`ngrok_*_windows_amd64.zip\` - x64 架构
-      - \`ngrok_*_windows_arm64.zip\` - ARM64 架构
-
-      ### 📖 使用说明
-      
-      \`\`\`bash
-      # Linux 安装 deb 包
-      sudo dpkg -i ngrok_*_amd64.deb
-      
-      # 启动客户端（证书已内置）
-      ngrok -hostname="$DOMAIN" 8080
-      
-      # 启动服务端
-      ngrokd -domain="$DOMAIN"
-      \`\`\`
-      
-      ### ⚠️ 注意事项
-      - 证书每 80 天自动更新重建
-      - 本构建基于 ngrok v1，支持自托管服务端和客户端
-      - 证书已编译到二进制文件中，无需额外配置
-      EOF
+          ## 🚀 ngrok v1 自定义编译版本
+          
+          **🌐 域名**: \`$DOMAIN\`
+          **📅 构建时间**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          **🔒 证书类型**: Let's Encrypt (Dynv6 DNS 验证)
+          **⏰ 证书有效期**: 90 天（自动续期）
+          
+          ### 📦 包含的文件
+          
+          #### 🐧 Linux (deb 包)
+          - \`ngrok_*_amd64.deb\` - x86_64 架构（客户端 + 服务端）
+          - \`ngrok_*_arm64.deb\` - ARM64 架构（客户端 + 服务端）
+          
+          #### 🍎 macOS (zip 包)
+          - \`ngrok_*_darwin_amd64.zip\` - Intel 处理器
+          
+          #### 🪟 Windows (zip 包)
+          
+          - \`ngrok_*_windows_arm64.zip\` - ARM64 架构
+          
+          ### 📖 使用说明
+          
+          \`\`\`bash
+          # Linux 安装 deb 包
+          sudo dpkg -i ngrok_*_amd64.deb
+          
+          # 启动客户端（证书已内置）
+          ngrok -hostname="$DOMAIN" 8080
+          
+          # 启动服务端
+          
+          \`\`\`
+          
+          ### ⚠️ 注意事项
+          - 证书每 80 天自动更新重建
+          - 本构建基于 ngrok v1，支持自托管服务端和客户端
+          - 证书已编译到二进制文件中，无需额外配置
+          EOF
 
       - name: 创建 Release 并上传文件
         uses: softprops/action-gh-release@v2
