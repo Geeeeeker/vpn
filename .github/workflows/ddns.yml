@@ -211,14 +211,14 @@ jobs:
           
           # 创建 control 文件
           cat > $DEB_DIR/DEBIAN/control << EOF
-Package: ngrok
-Version: $PKG_VER
-Architecture: $ARCH
-Maintainer: CI Bot <ci-bot@github.com>
-Description: ngrok - Introspected tunnels to localhost
- Custom build with Let's Encrypt SSL certificates for $DOMAIN
- Built on $(date -u +'%Y-%m-%d %H:%M:%S UTC')
- EOF
+          Package: ngrok
+          Version: $PKG_VER
+          Architecture: $ARCH
+          Maintainer: CI Bot <ci-bot@github.com>
+          Description: ngrok - Introspected tunnels to localhost
+           Custom build with Let's Encrypt SSL certificates for $DOMAIN
+           Built on $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+           EOF
           
           # 构建 deb 包
           dpkg-deb --build $DEB_DIR
@@ -256,16 +256,16 @@ Description: ngrok - Introspected tunnels to localhost
           
           # 创建说明文件
           cat > $PKG_DIR/README.txt << EOF
-ngrok Custom Build
-========================
-Version   : $VERSION
-Platform  : $OS / $ARCH
-Domain    : $DOMAIN
-Build Date: $(date -u)
-Certificate: Let's Encrypt (via Dynv6 DNS)
-========================
-Usage: ./ngrok <local port or address>
-EOF
+          ngrok Custom Build
+          ========================
+          Version   : $VERSION
+          Platform  : $OS / $ARCH
+          Domain    : $DOMAIN
+          Build Date: $(date -u)
+          Certificate: Let's Encrypt (via Dynv6 DNS)
+          ========================
+          Usage: ./ngrok <local port or address>
+          EOF
           
           # 打包
           ZIP_FILE="ngrok_${VERSION}_${OS}_${ARCH}.zip"
