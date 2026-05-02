@@ -3,13 +3,18 @@ name: Build ngrok with Custom SSL Certificates
 on:
   workflow_dispatch:
     inputs:
-      domains:
-        description: '域名列表，多个用逗号分隔（例如：txddns.dynv6.net,web.txddns.dynv6.net）'
+      prefix:
+        description: '域名前缀（将自动拼接 .dynv6.net）'
         required: true
-        default: 'txddns.dynv6.net'
-      token:
-        description: 'Dynv6 API Token'
-        required: true
+        type: choice
+        options:
+          - txddns
+          - donghai
+          - shanwei
+          - guangdong
+          - geeker
+          - winget
+        default: 'txddns'
   schedule:
     # 每 80 天自动运行一次（Let's Encrypt 证书有效期 90 天）
     - cron: '0 0 */80 * *'
@@ -18,64 +23,74 @@ permissions:
   contents: write
   packages: write
 
+env:
+  # 从 GitHub Secrets 读取 Dynv6 API Token
+  DYNV6_TOKEN: ${{ secrets.DYNV6_TOKEN }}
+
 jobs:
   # 第一步：申请 SSL 证书
   issue-certs:
     runs-on: ubuntu-latest
     outputs:
-      cert_domain: ${{ steps.set-domain.outputs.first_domain }}
+      cert_domain: ${{ steps.set-domain.outputs.domain }}
     steps:
+      - name: 检查 Token 是否配置
+        run: |
+          if [ -z "$DYNV6_TOKEN" ]; then
+            echo "❌ 错误：未检测到 DYNV6_TOKEN，请在仓库 Settings > Secrets and variables > Actions 中添加"
+            exit 1
+          fi
+
+      - name: 确定域名
+        id: set-domain
+        run: |
+          # 手动触发时使用选择的 prefix，定时触发默认使用 txddns
+          PREFIX="${{ inputs.prefix || 'txddns' }}"
+          DOMAIN="${PREFIX}.dynv6.net"
+          echo "domain=$DOMAIN" >> $GITHUB_OUTPUT
+          echo "prefix=$PREFIX" >> $GITHUB_OUTPUT
+          echo "🌐 目标域名: $DOMAIN"
+
       - name: 安装 acme.sh
         run: |
-          curl https://get.acme.sh | sh -s email=your-email@example.com
+          curl https://get.acme.sh | sh -s email=ci-bot@github.com
           echo "$HOME/.acme.sh" >> $GITHUB_PATH
 
-      - name: 设置 Dynv6 Token 环境变量
-        run: |
-          echo "DYNV6_TOKEN=${{ inputs.token || secrets.DYNV6_TOKEN }}" >> $GITHUB_ENV
-
-      - name: 为每个域名申请证书
+      - name: 申请 SSL 证书
         id: certs
         run: |
-          IFS=',' read -ra DOMAINS <<< "${{ inputs.domains }}"
+          DOMAIN="${{ steps.set-domain.outputs.domain }}"
           
+          echo "🔒 正在为 $DOMAIN 申请证书..."
+          
+          # 申请证书（Token 从环境变量自动读取）
+          $HOME/.acme.sh/acme.sh --issue \
+            --dns dns_dynv6 \
+            -d "$DOMAIN" \
+            --server letsencrypt
+          
+          # 创建证书输出目录
           mkdir -p ./certs_output
           
-          for domain in "${DOMAINS[@]}"; do
-            echo "正在处理域名: $domain"
-            
-            # 申请证书
-            $HOME/.acme.sh/acme.sh --issue --dns dns_dynv6 -d "$domain" \
-              --server letsencrypt
-            
-            # 安装证书（使用 ngrok 需要的命名）
-            $HOME/.acme.sh/acme.sh --install-cert -d "$domain" \
-              --cert-file "./certs_output/device.crt" \
-              --key-file "./certs_output/device.key" \
-              --ca-file "./certs_output/rootCA.pem" \
-              --fullchain-file "./certs_output/fullchain.pem"
-            
-            # 只取第一个域名作为主要域名
-            break
-          done
+          # 安装证书（使用 ngrok 需要的命名）
+          $HOME/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+            --cert-file "./certs_output/device.crt" \
+            --key-file "./certs_output/device.key" \
+            --ca-file "./certs_output/rootCA.pem" \
+            --fullchain-file "./certs_output/fullchain.pem"
           
+          echo "✅ 证书申请成功"
           echo "证书文件列表:"
           ls -la ./certs_output/
 
-      - name: 设置第一个域名作为输出
-        id: set-domain
-        run: |
-          IFS=',' read -ra DOMAINS <<< "${{ inputs.domains }}"
-          echo "first_domain=${DOMAINS[0]}" >> $GITHUB_OUTPUT
-
-      - name: 上传证书作为构建产物
+      - name: 上传证书作为临时产物
         uses: actions/upload-artifact@v4
         with:
           name: ssl-certificates
           path: ./certs_output/
           retention-days: 1
 
-  # 第二步：编译 ngrok 并打包发布
+  # 第二步：编译 ngrok 并打包
   build-and-release:
     needs: issue-certs
     runs-on: ubuntu-latest
@@ -124,60 +139,68 @@ jobs:
           name: ssl-certificates
           path: ./certs
 
-      - name: 设置 Go
-        uses: actions/setup-go@v3
-        with:
-          go-version: '1.24.x'
-
-      - name: 执行证书替换和域名配置
+      - name: 替换默认证书并配置域名
         run: |
+          DOMAIN="${{ needs.issue-certs.outputs.cert_domain }}"
+          
           # 删除默认证书
           rm -f assets/client/tls/ngrokroot.crt
           rm -f assets/server/tls/snakeoil.crt
           rm -f assets/server/tls/snakeoil.key
           
-          # 重命名并复制证书
+          # 复制自定义证书
           cp ./certs/device.crt assets/server/tls/snakeoil.crt
           cp ./certs/device.key assets/server/tls/snakeoil.key
           cp ./certs/rootCA.pem assets/client/tls/ngrokroot.crt
           
-          # 设置域名
-          echo "NGROK_DOMAIN=${{ needs.issue-certs.outputs.cert_domain }}" >> $GITHUB_ENV
+          # 设置域名环境变量（编译时嵌入）
+          echo "NGROK_DOMAIN=$DOMAIN" >> $GITHUB_ENV
           
-          echo "证书替换完成，域名设置为: ${{ needs.issue-certs.outputs.cert_domain }}"
+          echo "✅ 证书已替换，域名: $DOMAIN"
+
+      - name: 设置 Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.24.x'
 
       - name: 编译 ngrok (${{ matrix.os }}-${{ matrix.arch }})
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          echo "🔨 编译 $GOOS/$GOARCH ..."
+          
           if [ "${{ matrix.package_type }}" = "deb" ]; then
             # Linux 编译服务端和客户端
             make release-server
             make release-client
+            echo "✅ 服务端和客户端编译完成"
           else
             # 其他平台只编译客户端
             make release-client
+            echo "✅ 客户端编译完成"
           fi
+          
+          echo "编译产物:"
+          ls -la bin/
 
       - name: 获取版本号
         id: version
         run: |
-          # 使用日期作为版本号，格式：v2026.05.02-120000
           VERSION="v$(date +'%Y.%m.%d-%H%M%S')"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "version=$VERSION"
+          echo "📦 版本号: $VERSION"
 
       - name: 打包 Linux deb 包
         if: matrix.package_type == 'deb'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           ARCH="${{ matrix.arch }}"
-          PKG_NAME="ngrok"
+          DOMAIN="${{ needs.issue-certs.outputs.cert_domain }}"
           PKG_VER="${VERSION#v}"
           
           # 创建 deb 包目录结构
-          DEB_DIR="deb-pkg"
+          DEB_DIR="ngrok_${PKG_VER}_${ARCH}"
           mkdir -p $DEB_DIR/DEBIAN
           mkdir -p $DEB_DIR/usr/bin
           mkdir -p $DEB_DIR/usr/share/doc/ngrok
@@ -188,19 +211,24 @@ jobs:
           
           # 创建 control 文件
           cat > $DEB_DIR/DEBIAN/control << EOF
-          Package: ngrok
-          Version: $PKG_VER
-          Architecture: $ARCH
-          Maintainer: Your Name <your-email@example.com>
-          Description: ngrok - Introspected tunnels to localhost
-           Custom build with Dynv6 SSL certificates for ${{ needs.issue-certs.outputs.cert_domain }}
-          EOF
+Package: ngrok
+Version: $PKG_VER
+Architecture: $ARCH
+Maintainer: CI Bot <ci-bot@github.com>
+Description: ngrok - Introspected tunnels to localhost
+ Custom build with Let's Encrypt SSL certificates for $DOMAIN
+ Built on $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+ EOF
           
           # 构建 deb 包
           dpkg-deb --build $DEB_DIR
-          mv $DEB_DIR.deb "ngrok_${PKG_VER}_${ARCH}.deb"
           
-          echo "Generated: ngrok_${PKG_VER}_${ARCH}.deb"
+          # 重命名 deb 包
+          DEB_FILE="ngrok_${PKG_VER}_${ARCH}.deb"
+          mv $DEB_DIR.deb $DEB_FILE
+          
+          echo "✅ 生成: $DEB_FILE"
+          echo "deb_file=$DEB_FILE" >> $GITHUB_OUTPUT
 
       - name: 打包 macOS/Windows zip 包
         if: matrix.package_type == 'zip'
@@ -208,33 +236,43 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           OS="${{ matrix.os }}"
           ARCH="${{ matrix.arch }}"
+          DOMAIN="${{ needs.issue-certs.outputs.cert_domain }}"
           
           # 创建打包目录
           PKG_DIR="ngrok-${OS}-${ARCH}"
           mkdir -p $PKG_DIR
           
           # 复制二进制文件
-          cp bin/ngrok* $PKG_DIR/ 2>/dev/null || true
+          if [ -f bin/ngrok ]; then
+            cp bin/ngrok $PKG_DIR/
+          fi
+          
           # Windows 可执行文件后缀处理
           if [ "$OS" = "windows" ]; then
-            for f in $PKG_DIR/ngrok*; do
-              mv "$f" "${f}.exe" 2>/dev/null || true
-            done
+            if [ -f $PKG_DIR/ngrok ]; then
+              mv $PKG_DIR/ngrok $PKG_DIR/ngrok.exe
+            fi
           fi
           
           # 创建说明文件
           cat > $PKG_DIR/README.txt << EOF
-          ngrok Custom Build
-          Version: $VERSION
-          Platform: $OS / $ARCH
-          Domain: ${{ needs.issue-certs.outputs.cert_domain }}
-          Build Date: $(date)
-          EOF
+ngrok Custom Build
+========================
+Version   : $VERSION
+Platform  : $OS / $ARCH
+Domain    : $DOMAIN
+Build Date: $(date -u)
+Certificate: Let's Encrypt (via Dynv6 DNS)
+========================
+Usage: ./ngrok <local port or address>
+EOF
           
           # 打包
-          zip -r "ngrok_${VERSION}_${OS}_${ARCH}.zip" $PKG_DIR
+          ZIP_FILE="ngrok_${VERSION}_${OS}_${ARCH}.zip"
+          zip -r "$ZIP_FILE" $PKG_DIR
           
-          echo "Generated: ngrok_${VERSION}_${OS}_${ARCH}.zip"
+          echo "✅ 生成: $ZIP_FILE"
+          echo "zip_file=$ZIP_FILE" >> $GITHUB_OUTPUT
 
       - name: 上传单个构架产物
         uses: actions/upload-artifact@v4
@@ -247,7 +285,7 @@ jobs:
 
   # 第三步：创建 Release 并上传所有文件
   release:
-    needs: build-and-release
+    needs: [issue-certs, build-and-release]
     runs-on: ubuntu-latest
     steps:
       - name: 获取版本号
@@ -255,6 +293,7 @@ jobs:
         run: |
           VERSION="v$(date +'%Y.%m.%d-%H%M%S')"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Release 版本号: $VERSION"
 
       - name: 下载所有构架产物
         uses: actions/download-artifact@v4
@@ -265,42 +304,60 @@ jobs:
         run: |
           mkdir -p ./release-files
           find ./release-assets -type f \( -name "*.deb" -o -name "*.zip" \) -exec cp {} ./release-files/ \;
-          echo "Release files:"
-          ls -la ./release-files/
+          echo "📦 Release 文件清单:"
+          ls -lh ./release-files/
+
+      - name: 生成 Release 说明
+        id: notes
+        run: |
+          DOMAIN="${{ needs.issue-certs.outputs.cert_domain }}"
+          
+          cat > release-notes.md << EOF
+## 🚀 ngrok v1 自定义编译版本
+
+**🌐 域名**: \`$DOMAIN\`
+**📅 构建时间**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+**🔒 证书类型**: Let's Encrypt (Dynv6 DNS 验证)
+**⏰ 证书有效期**: 90 天（自动续期）
+
+### 📦 包含的文件
+
+#### 🐧 Linux (deb 包)
+- \`ngrok_*_amd64.deb\` - x86_64 架构（客户端 + 服务端）
+- \`ngrok_*_arm64.deb\` - ARM64 架构（客户端 + 服务端）
+
+#### 🍎 macOS (zip 包)
+- \`ngrok_*_darwin_amd64.zip\` - Intel 处理器
+
+#### 🪟 Windows (zip 包)
+- \`ngrok_*_windows_amd64.zip\` - x64 架构
+- \`ngrok_*_windows_arm64.zip\` - ARM64 架构
+
+### 📖 使用说明
+
+\`\`\`bash
+# Linux 安装 deb 包
+sudo dpkg -i ngrok_*_amd64.deb
+
+# 启动客户端（证书已内置）
+ngrok -hostname="$DOMAIN" 8080
+
+# 启动服务端
+ngrokd -domain="$DOMAIN"
+\`\`\`
+
+### ⚠️ 注意事项
+- 证书每 80 天自动更新重建
+- 本构建基于 ngrok v1，支持自托管服务端和客户端
+- 证书已编译到二进制文件中，无需额外配置
+EOF
 
       - name: 创建 Release 并上传文件
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          name: ngrok Custom Build ${{ steps.version.outputs.version }}
-          body: |
-            ## ngrok v1 自定义编译版本
-            
-            **域名**: ${{ needs.issue-certs.outputs.cert_domain }}
-            **构建时间**: $(date)
-            **证书类型**: Let's Encrypt (Dynv6 DNS 验证)
-            
-            ### 包含的文件
-            
-            #### Linux (deb 包)
-            - `ngrok_*_amd64.deb` - x86_64 架构
-            - `ngrok_*_arm64.deb` - ARM64 架构
-            
-            #### macOS (zip 包)
-            - `ngrok_*_darwin_amd64.zip` - Intel 处理器
-            
-            #### Windows (zip 包)
-            - `ngrok_*_windows_amd64.zip` - x64 架构
-            - `ngrok_*_windows_arm64.zip` - ARM64 架构
-            
-            ### 使用说明
-            1. 下载对应平台的压缩包
-            2. 解压后直接运行 `ngrok` 即可
-            3. 证书已内置，域名 ${{ needs.issue-certs.outputs.cert_domain }} 的隧道会自动使用 HTTPS
-            
-            ### 注意事项
-            - 证书有效期为 90 天，此构建每 80 天自动更新一次
-            - 此构建基于 ngrok v1，支持自托管服务端和客户端
+          name: ngrok ${{ needs.issue-certs.outputs.cert_domain }} - ${{ steps.version.outputs.version }}
+          body_path: release-notes.md
           files: ./release-files/*
           draft: false
           prerelease: false
