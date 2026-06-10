@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPN 远程控制面板</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f4f7f9; }
+        .card { background: white; padding: 2.5rem; border-radius: 24px; box-shadow: 0 15px 35px rgba(0,0,0,0.1); text-align: center; width: 85%; max-width: 400px; }
+        h2 { color: #333; margin-bottom: 1rem; font-size: 1.5rem; }
+        p { color: #666; margin-bottom: 2rem; font-size: 0.9rem; line-height: 1.4; }
+        .btn { width: 100%; height: 65px; font-size: 1.2rem; font-weight: bold; background: #007aff; color: white; border: none; border-radius: 16px; cursor: pointer; transition: all 0.2s; }
+        .btn:active { transform: scale(0.96); background: #0056b3; }
+        #status { margin-top: 1.5rem; padding: 1rem; border-radius: 12px; font-size: 0.9rem; display: none; }
+        .success { display: block !important; background: #e7f4e9; color: #1e7e34; border: 1px solid #d4edda; }
+        .error { display: block !important; background: #fdf2f2; color: #c81e1e; border: 1px solid #f8d7da; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🚀 启动 GitHub 节点</h2>
+        <p>点击后，系统将自动生成随机域名并发送 VLESS 链接至你的 QQ 邮箱。</p>
+        <button class="btn" onclick="runVPN()">发送到 QQ 邮箱</button>
+        <div id="status"></div>
+    </div>
+
+    <script>
+    async function runVPN() {
+        const statusDiv = document.getElementById('status');
+        
+        // 【关键填写项】
+        // 1. 替换为你生成的 GitHub Token (必须有 repo 权限)
+        const token = 'YOUR_GITHUB_TOKEN_HERE'; 
+        // 2. 确认你的仓库路径是否正确
+        const repo = 'Geeeeeker/vpn'; 
+
+        statusDiv.className = '';
+        statusDiv.innerText = "⏳ 正在联系 GitHub 服务器...";
+        statusDiv.style.display = 'block';
+
+        try {
+            const response = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Accept': 'application/vnd.github.v3+json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ event_type: 'start_proxy' })
+            });
+
+            if (response.status === 204) {
+                statusDiv.className = 'success';
+                statusDiv.innerText = "✅ 指令已送达！请在 60 秒内检查 554088258@qq.com 的收件箱或垃圾箱。";
+            } else {
+                statusDiv.className = 'error';
+                statusDiv.innerText = "❌ 触发失败 (状态码: " + response.status + ")。请检查 Token 是否过期。";
+            }
+        } catch (err) {
+            statusDiv.className = 'error';
+            statusDiv.innerText = "❌ 网络请求出错，请检查本地网络环境。";
+        }
+    }
+    </script>
+</body>
+</html>
